@@ -62,12 +62,16 @@ if not _G['maritimedissector'] then return end
 -- List of fragmented PGN for NMEA 2000 (Source: https://github.com/canboat/canboat/blob/master/sources/NMEA_database_1_300.xml)
 local fragmented_pgns = {{\n""")
 
-    # Parse XML
+    # Parse XML without repeating values
+    fragmented = set()
     for pgn in data["PGNs"]:
         if pgn["PGN"] in UNSUPPORTED:
             continue
 
         if pgn["Type"] == "Fast":
+            if pgn["PGN"] in fragmented:
+                continue
+            fragmented.add(pgn["PGN"])
             f.write(f"\t[{int(pgn["PGN"])}]=true,\n")
 
     f.write(f"""}}
