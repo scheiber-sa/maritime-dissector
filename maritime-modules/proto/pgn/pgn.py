@@ -4,7 +4,7 @@ import json
 import os
 import argparse
 
-UNSUPPORTED = [130817]
+UNSUPPORTED = [130817, 130818]
 
 # Argument parsing
 parser = argparse.ArgumentParser(
