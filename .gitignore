@@ -10,3 +10,7 @@ luacov*
 
 *.swp
 *DS_Store
+
+# nmea2000 generated lua files
+maritime-modules/knownids/pgn*.lua
+maritime-modules/proto/pgn/pgn*.lua
