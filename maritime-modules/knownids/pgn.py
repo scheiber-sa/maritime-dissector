@@ -2,14 +2,30 @@
 import requests
 import os
 import json
+import argparse
 
 ONLINE = False
 
 UNSUPPORTED = [130817]
 
+# Argument parsing
+parser = argparse.ArgumentParser(
+    description="Generate Lua PGN files from canboat.json for NMEA 2000 dissector."
+)
+parser.add_argument(
+    '-p', '--pgn-json-path',
+    type=str,
+    default='../../docs/canboat.json',
+    help='Path to pgn json path (default: ../../docs/canboat.json)'
+)
+args = parser.parse_args()
+json_path = args.pgn_json_path
+# Get the directory of this script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
 # Download NMEA2000 definition
-if os.path.isfile("../../docs/canboat.json"):
-    with open("../../docs/canboat.json", "r") as f:
+if os.path.isfile(json_path):
+    with open(json_path, "r") as f:
         data = json.load(f)
 else:
     print("Downloading NMEA2000 definition ...")
@@ -17,7 +33,7 @@ else:
     response = requests.get(url)
     data = json.loads(response.content)
 
-with open("pgn.lua", "w") as f:
+with open(os.path.join(script_dir, "pgn.lua"), "w") as f:
     f.write(f"""-- prevent wireshark loading this file as plugin
 if not _G['maritimedissector'] then return end
 
@@ -37,7 +53,7 @@ local known_pgns = {{\n""")
 
 return known_pgns""")
 
-with open("pgn-fragmented.lua", "w") as f:
+with open(os.path.join(script_dir, "pgn-fragmented.lua"), "w") as f:
     f.write(f"""-- prevent wireshark loading this file as plugin
 if not _G['maritimedissector'] then return end
 

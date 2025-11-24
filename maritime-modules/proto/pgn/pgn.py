@@ -2,12 +2,27 @@
 import requests
 import json
 import os
-
-abspath = os.path.abspath(__file__)
-dname = os.path.dirname(abspath)
-os.chdir(dname)
+import argparse
 
 UNSUPPORTED = [130817]
+
+# Argument parsing
+parser = argparse.ArgumentParser(
+    description="Generate NMEA2000 lua PGN dissector files from canboat.json."
+)
+parser.add_argument(
+    '-p', '--pgn-json-path',
+    type=str,
+    default='../../docs/canboat.json',
+    help='Path to pgn json path (default: ../../docs/canboat.json relative to this script)'
+)
+args = parser.parse_args()
+json_path = args.pgn_json_path
+# Get the directory of this script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+# Resolve relative paths with respect to the script location so running from any cwd finds the repo copy.
+if not os.path.isabs(json_path):
+    json_path = os.path.abspath(os.path.join(script_dir, json_path))
 
 def get_bitmask(length, offset): # Note Litle endian
     mask = 0x00
@@ -158,8 +173,8 @@ def parse_field(field, pgn):
 
 
 # Download NMEA2000 definition
-if os.path.isfile("../../../docs/canboat.json"):
-    with open("../../../docs/canboat.json", "r") as f:
+if os.path.isfile(json_path):
+    with open(json_path, "r") as f:
         data = json.load(f)
 else:
     print("Downloading NMEA2000 definition ...")
@@ -197,7 +212,7 @@ for pgn in data["PGNs"]:
         fieldnames += name
      
     # Write pgn_***.lua files
-    with open(f"pgn_{pgn["PGN"]}.lua", "w") as f:
+    with open(os.path.join(script_dir, f"pgn_{pgn['PGN']}.lua"), "w") as f:
 
         f.write(f"""-- prevent wireshark loading this file as plugin
 if not _G['maritimedissector'] then return end
@@ -224,7 +239,7 @@ function NMEA_2000_{pgn["PGN"]}.dissector(buffer, pinfo, tree)
 return NMEA_2000_{pgn["PGN"]}
 """)
 
-with open(f"./pgn.lua", "w") as f:
+with open(os.path.join(script_dir, "pgn.lua"), "w") as f:
     f.write(f"""-- prevent wireshark loading this file as plugin
 if not _G['maritimedissector'] then return end
 

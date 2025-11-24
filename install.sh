@@ -10,6 +10,12 @@
 # fail on error
 set -eu
 
+# Global variables with default values
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+JSON_PATH="$(realpath "$SCRIPT_DIR/docs/canboat.json")"
+WIRESHARK_PLUGIN_PATH="$HOME/.local/lib/wireshark/plugins"
+REMOVE_GENERATED_LUA_FILES=0
+
 # check if script is executed as root which it should NOT
 if [ $(id -u) = 0 ]; then
     echo "FAILED: Installation script was executed as root."
@@ -17,6 +23,29 @@ if [ $(id -u) = 0 ]; then
     echo
     echo "Exiting installation"
 fi
+
+usage() {
+echo -e "Usage:
+            -j | --pgn-json-path                path to pgn json file (default: SCRIPT_DIR/docs/canboat.json)
+            -p | --wireshark-plugin-path        path to wireshark plugin directory (default: ~/.local/lib/wireshark/plugins/)
+            -g | --remove-generated-files       remove generated lua files after installation (default: do not remove)
+            -h | --help:                        display help"
+        exit
+}
+
+options=$(getopt -o j:,p:,g,h -l pgn-json-path:,wireshark-plugin-path:,remove-generated-files,help -- "$@")
+[ $? != "0" ] && usage
+eval set -- "$options"
+
+while true; do
+    case "$1" in
+        -j|--pgn-json-path)             shift; JSON_PATH=$(realpath "$1")               ; shift ;;
+        -p|--wireshark-plugin-path)     shift; WIRESHARK_PLUGIN_PATH=$(realpath "$1")   ; shift ;;
+        -g|--remove-generated-files)    REMOVE_GENERATED_LUA_FILES=1                    ; shift ;;
+        -h|--help)                                                                      usage ;;
+        *)                                                                              break ;;
+    esac
+done
 
 echo "Run initial checks before installation..."
 echo
@@ -51,9 +80,7 @@ else
 fi
 
 # Check if the users private wireshark plugin directory exists
-WIRESHARK_PLUGIN_PATH=$HOME/.local/lib/wireshark/plugins/
-echo "The dissector will be installed in current users private wireshark plugin directory:"
-echo $WIRESHARK_PLUGIN_PATH
+echo "The dissector will be installed in: $WIRESHARK_PLUGIN_PATH"
 echo
 echo "Check if plugin directory exists..."
 if [ -d "$WIRESHARK_PLUGIN_PATH" ]; then
@@ -95,14 +122,29 @@ fi
 echo "Initial checks successfull. Starting installation..."
 echo
 
-# Do the installtion by copying the files to the plugin
+# Generate NMEA2000 lua files
+echo "NMEA2000 lua files generation..."
+python3 "$SCRIPT_DIR/maritime-modules/knownids/pgn.py" -p "$JSON_PATH" > /dev/null 2>&1
+python3 "$SCRIPT_DIR/maritime-modules/proto/pgn/pgn.py" -p "$JSON_PATH" > /dev/null 2>&1
+echo
+
+# Do the installation by copying the files to the plugin directory
 echo "Copy files to plugin directory..."
-( set -x; cp -r ./maritime-modules $WIRESHARK_PLUGIN_PATH )
-( set -x; cp -r ./br24-modules $WIRESHARK_PLUGIN_PATH )
-( set -x; cp -r ./furuno-modules $WIRESHARK_PLUGIN_PATH )
-( set -x; cp ./maritime-dissector.lua $WIRESHARK_PLUGIN_PATH )
-( set -x; cp ./br24-dissector.lua $WIRESHARK_PLUGIN_PATH )
-( set -x; cp ./furuno-dissector.lua $WIRESHARK_PLUGIN_PATH )
+( set -x; rsync -a --delete $SCRIPT_DIR/maritime-modules $WIRESHARK_PLUGIN_PATH )
+( set -x; rsync -a --delete $SCRIPT_DIR/br24-modules $WIRESHARK_PLUGIN_PATH )
+( set -x; rsync -a --delete $SCRIPT_DIR/furuno-modules $WIRESHARK_PLUGIN_PATH )
+( set -x; cp $SCRIPT_DIR/maritime-dissector.lua $WIRESHARK_PLUGIN_PATH )
+( set -x; cp $SCRIPT_DIR/br24-dissector.lua $WIRESHARK_PLUGIN_PATH )
+( set -x; cp $SCRIPT_DIR/furuno-dissector.lua $WIRESHARK_PLUGIN_PATH )
+
+# Remove generated lua files
+if [ "$REMOVE_GENERATED_LUA_FILES" -eq 1 ]; then
+    echo
+    echo "Removing generated NMEA2000 lua files..."
+    rm $SCRIPT_DIR/maritime-modules/knownids/pgn*.lua
+    rm $SCRIPT_DIR/maritime-modules/proto/pgn/pgn*.lua
+fi
+
 echo
 echo "Installation successfull. Exiting."
 exit 0
