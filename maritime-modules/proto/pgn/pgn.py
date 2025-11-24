@@ -41,25 +41,41 @@ def parse_field(field, pgn):
             print("WARNING: Missing Fieldtype")
         else:
             pass # TODO Handle those types
-        return [], [], []
+        return [], [], [], False
 
     ######### Integer
     if field["FieldType"] in ["NUMBER", "DATE", "TIME", "DURATION", "PGN", "ISO_NAME", "MMSI"]: # uint8 uint16 uint32 int8 ...
+        if "BitOffset" not in field or "BitLength" not in field:
+            print("WARNING: Missing BitOffset or BitLength")
+            return [], [], [], False
+
+        bit_offset = int(field["BitOffset"])
+        bit_length = int(field["BitLength"])
+
+        # bit-sized (non byte-aligned) integers: use helper to extract arbitrary little-endian bit ranges
+        if bit_offset % 8 != 0 or bit_length % 8 != 0:
+            scale = field.get("Resolution", 1)
+            signed = field.get("Signed", False)
+
+            proto = f"""local {field["Id"]} = ProtoField.float("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+
+            tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
+    {"if v_"+field["Id"]+" >= 2^(" + str(bit_length-1) + ") then v_"+field["Id"]+" = v_"+field["Id"]+" - 2^" + str(bit_length) + " end" if signed else ""}
+    subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]} * {scale})"""
+
+            return [proto], [tree], [field["Id"]], True
+
         if "BitStart" in field and int(field["BitStart"]) % 8 != 0:
             print("WARNING: BitStart not divisible by 8")
-            return [], [], []
+            return [], [], [], False
             assert int(field["BitStart"]) % 8 == 0
 
-        if "BitOffset" not in field:
-            print("WARNING: Missing BitOffset")
-            return [], [], []
-
-        if int(field["BitLength"]) % 8 != 0:
+        if bit_length % 8 != 0:
             print("WARNING: BitLength not divisible by 8")
-            return [], [], []
+            return [], [], [], False
 
-        assert int(field["BitOffset"]) % 8 == 0
-        assert int(field["BitLength"]) % 8 == 0
+        assert bit_offset % 8 == 0
+        assert bit_length % 8 == 0
 
         if "Resolution" in field:
             scale = field["Resolution"]
@@ -76,7 +92,7 @@ def parse_field(field, pgn):
         else:
             assert False
 
-        return [proto], [tree], [field["Id"]]
+        return [proto], [tree], [field["Id"]], False
 
     ######### Float
     elif field["FieldType"] == "FLOAT": # float32 resolution 1, signed 1
@@ -89,50 +105,56 @@ def parse_field(field, pgn):
 
         tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {int(field["BitOffset"]) // 8}, {int(field["BitLength"]) // 8}))"""
 
-        return [proto], [tree], [field["Id"]]
+        return [proto], [tree], [field["Id"]], False
 
-    ######### Bit
-    elif field["FieldType"] == "LOOKUP":
+    ######### Bit / Lookups (including indirect)
+    elif field["FieldType"] in ["LOOKUP", "INDIRECT_LOOKUP"]:
 
         if "BitOffset" not in field:
             print("WARNING: Missing BitOffset")
-            return [], [], []
+            return [], [], [], False
 
         if "BitLength" not in field:
             if pgn not in ["129792", "129795", "129797"]:
                 print("WARNING: Missing BitLength")
             else:
                 pass # TODO handle these fields
-            return [], [], []
+            return [], [], [], False
 
-        if int(field["BitLength"]) > 8:
-            print("WARNING: bit is too long. Not Implemented yet")
-            return [], [], []
+        bit_offset = int(field["BitOffset"])
+        bit_length = int(field["BitLength"])
+        bit_start = int(field.get("BitStart", 0))
 
-        assert field["FieldType"] == "LOOKUP"
-        assert int(field["BitLength"]) <= 8
-        assert (int(field["BitOffset"]) - int(field["BitStart"])) % 8 == 0
+        if bit_length > 32:
+            print(f"WARNING: lookup bit length too long for pgn {pgn}. Not Implemented yet")
+            return [], [], [], False
+
         assert "Resolution" not in field or field["Resolution"] == 1
-        assert field["Signed"] == False
+        assert field.get("Signed", False) == False
 
-        bitmask = get_bitmask(int(field["BitLength"]), int(field["BitStart"]))
+        # simple in-byte mask when aligned and <= 8 bits
+        if bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0:
+            bitmask = get_bitmask(bit_length, bit_start)
+            proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}", base.DEC, NULL, {bitmask})"""
+            tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {bit_offset // 8}, 1))"""
+            return [proto], [tree], [field["Id"]], False
 
-        proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}", base.DEC, NULL, {bitmask})"""
-
-        tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {int(field["BitOffset"]) // 8}, 1))"""
-
-        return [proto], [tree], [field["Id"]]
+        # generic masked extract for larger or unaligned lookups
+        proto = f"""local {field["Id"]} = ProtoField.uint32("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+        tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
+    subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
+        return [proto], [tree], [field["Id"]], True
 
     ######### String FIX
     elif field["FieldType"] == "STRING_FIX":
 
         if "BitOffset" not in field:
             print("WARNING: Missing BitOffset")
-            return [], [], []
+            return [], [], [], False
 
         if "BitLength" not in field:
             print("WARNING: Missing BitLength")
-            return [], [], []
+            return [], [], [], False
 
         assert "BitStart" not in field or int(field["BitStart"]) == 0
         assert int(field["BitOffset"]) % 8 == 0
@@ -142,7 +164,7 @@ def parse_field(field, pgn):
 
         tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {int(field["BitOffset"]) // 8}, {int(field["BitLength"]) // 8}))"""
 
-        return [proto], [tree], [field["Id"]]
+        return [proto], [tree], [field["Id"]], False
 
     ######### String LAU
     elif field["FieldType"] == "STRING_LAU":
@@ -162,14 +184,37 @@ def parse_field(field, pgn):
     subtree:add({field["Id"]}, buffer(str_offset + {int(field["BitOffset"]) // 8} + 2, length))
     str_offset = str_offset + length + 2"""
 
-        return [proto], [tree], [field["Id"]]
+        return [proto], [tree], [field["Id"]], False
 
     ######### Unknown
-    else: # Unknown or reserved
-        if field["FieldType"] not in ["RESERVED", "SPARE"]:
-            print(f"""Unknown field type {field["FieldType"]}""")
-            print(json.dumps(field, indent=4), pgn)
-        return [], [], []
+    elif field["FieldType"] in ["SPARE", "RESERVED"]:
+        if "BitOffset" not in field or "BitLength" not in field:
+            print("WARNING: Missing BitOffset or BitLength")
+            return [], [], [], False
+
+        bit_offset = int(field["BitOffset"])
+        bit_length = int(field["BitLength"])
+        bit_start = int(field.get("BitStart", 0))
+
+        if bit_length > 32:
+            print(f"WARNING: spare/reserved too long for pgn {pgn}. Not Implemented yet")
+            return [], [], [], False
+
+        if bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0:
+            bitmask = get_bitmask(bit_length, bit_start)
+            proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}", base.DEC, NULL, {bitmask})"""
+            tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {bit_offset // 8}, 1))"""
+            return [proto], [tree], [field["Id"]], False
+
+        proto = f"""local {field["Id"]} = ProtoField.uint32("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
+        tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
+    subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
+        return [proto], [tree], [field["Id"]], True
+
+    else: # Unknown
+        print(f"""Unknown field type {field["FieldType"]}""")
+        print(json.dumps(field, indent=4), pgn)
+        return [], [], [], False
 
 
 # Download NMEA2000 definition
@@ -187,29 +232,35 @@ created = []
 for pgn in data["PGNs"]:
 
     if pgn["PGN"] in UNSUPPORTED:
+        print(f"pgn {pgn["PGN"]} set as unsuported, skipping")
         continue
 
-    if 59392 <= pgn["PGN"] and pgn["PGN"] <= 60928: # Ignore ISO 11783 protocol definition
-        continue
-    if pgn["PGN"] == 61184: # Ignore Manufacturer proprietary
-        continue
-    if 65280 <= pgn["PGN"] and pgn["PGN"] <= 65535: # Ignore Manufacturer proprietary
-        continue
+    # if 59392 <= pgn["PGN"] and pgn["PGN"] <= 60416: # Ignore ISO 11783 protocol definition
+    #     print(f"pgn {pgn["PGN"]} ignored")
+    #     continue
+    # if pgn["PGN"] == 61184: # Ignore Manufacturer proprietary
+    #     print(f"pgn {pgn["PGN"]} ignored (Manufacturer proprietary)")
+    #     continue
+    # if 65280 <= pgn["PGN"] and pgn["PGN"] <= 65535: # Ignore Manufacturer proprietary
+    #     print(f"pgn {pgn["PGN"]} ignored (Manufacturer proprietary")
+    #     continue
 
     created.append(pgn["PGN"])
     fieldnames = []
     proto_fields = []
     tree_nodes = []
+    need_bit_helper = False
 
     for field in pgn["Fields"]:
         # Sanitize field["Id"] as they cannot contain numbers
         if field["Id"].startswith("1st"):
             field["Id"] = "first" + field["Id"][2:]
 
-        proto, tree, name = parse_field(field, pgn["PGN"])
+        proto, tree, name, helper = parse_field(field, pgn["PGN"])
         proto_fields += proto
         tree_nodes += tree
         fieldnames += name
+        need_bit_helper = need_bit_helper or helper
      
     # Write pgn_***.lua files
     with open(os.path.join(script_dir, f"pgn_{pgn['PGN']}.lua"), "w") as f:
@@ -223,6 +274,23 @@ NMEA_2000_{pgn["PGN"]} = Proto("nmea-2000-{pgn["PGN"]}", "{pgn["Description"]} (
 
         for field in proto_fields:
             f.write(f"""{field}\n""")
+
+        if need_bit_helper:
+            f.write("""
+local function read_bits_le(buf, bit_offset, bit_length)
+    local byte_offset = math.floor(bit_offset / 8)
+    local bit_in_byte = bit_offset % 8
+    local needed_bits = bit_in_byte + bit_length
+    local byte_len = math.ceil(needed_bits / 8)
+    local raw
+    if byte_len <= 4 then
+        raw = buf(byte_offset, byte_len):le_uint()
+    else
+        raw = buf(byte_offset, byte_len):le_uint64():tonumber()
+    end
+    return math.floor(raw / 2^bit_in_byte) % 2^bit_length, buf(byte_offset, byte_len)
+end
+""")
 
         f.write(f"""\nNMEA_2000_{pgn["PGN"]}.fields = {{{",".join(fieldnames)}}}
 
@@ -249,13 +317,21 @@ local pgn_dissector = {{}}
 
 """)
 
+    # Deduplicate PGNs while preserving order (some PGNs have multiple definitions)
+    unique_created = []
+    seen = set()
     for c in created:
+        if c not in seen:
+            unique_created.append(c)
+            seen.add(c)
+
+    for c in unique_created:
         f.write(f"NMEA_2000_{c} = require \"maritime-modules.proto.pgn.pgn_{c}\"\n")
 
     f.write(f"""\nfunction pgn_dissector.dissector(buffer, pinfo, tree, pgn)\n""")
 
-    for c in created:
-        f.write(f"""    {"if" if c == created[0] else "elseif"} pgn == {c} then
+    for idx, c in enumerate(unique_created):
+        f.write(f"""    {"if" if idx == 0 else "elseif"} pgn == {c} then
         NMEA_2000_{c}.dissector(buffer, pinfo, tree)\n""")
 
     f.write(f"""    else
