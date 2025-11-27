@@ -35,10 +35,12 @@ def get_bitmask(length, offset): # Note Litle endian
         offset -= 1
     return hex(mask)
 
-def parse_field(field, pgn):
+def parse_field(field, pgn_full):
+    pgn = pgn_full["PGN"]
+    print_format = f"""{pgn:<6} {pgn_full["Id"]:<59} {field["Id"]:<31} {field["FieldType"]:<20}"""
     if "FieldType" not in field:
         if not field["Id"].endswith("RepeatAsNeeded") and not field["Id"].endswith("RepeatedAsNeeded"):
-            print("WARNING: Missing Fieldtype")
+            print(f"{print_format} Missing Fieldtype")
         else:
             pass # TODO Handle those types
         return [], [], [], False
@@ -46,7 +48,7 @@ def parse_field(field, pgn):
     ######### Integer
     if field["FieldType"] in ["NUMBER", "DATE", "TIME", "DURATION", "PGN", "ISO_NAME", "MMSI"]: # uint8 uint16 uint32 int8 ...
         if "BitOffset" not in field or "BitLength" not in field:
-            print("WARNING: Missing BitOffset or BitLength")
+            print(f"{print_format} Missing BitOffset or BitLength")
             return [], [], [], False
 
         bit_offset = int(field["BitOffset"])
@@ -66,12 +68,12 @@ def parse_field(field, pgn):
             return [proto], [tree], [field["Id"]], True
 
         if "BitStart" in field and int(field["BitStart"]) % 8 != 0:
-            print("WARNING: BitStart not divisible by 8")
+            print(f"{print_format} BitStart not divisible by 8")
             return [], [], [], False
             assert int(field["BitStart"]) % 8 == 0
 
         if bit_length % 8 != 0:
-            print("WARNING: BitLength not divisible by 8")
+            print(f"{print_format} BitLength not divisible by 8")
             return [], [], [], False
 
         assert bit_offset % 8 == 0
@@ -111,12 +113,12 @@ def parse_field(field, pgn):
     elif field["FieldType"] in ["LOOKUP", "INDIRECT_LOOKUP"]:
 
         if "BitOffset" not in field:
-            print("WARNING: Missing BitOffset")
+            print(f"{print_format} Missing BitOffset")
             return [], [], [], False
 
         if "BitLength" not in field:
             if pgn not in ["129792", "129795", "129797"]:
-                print("WARNING: Missing BitLength")
+                print(f"{print_format} Missing BitLength")
             else:
                 pass # TODO handle these fields
             return [], [], [], False
@@ -126,7 +128,7 @@ def parse_field(field, pgn):
         bit_start = int(field.get("BitStart", 0))
 
         if bit_length > 32:
-            print(f"WARNING: lookup bit length too long for pgn {pgn}. Not Implemented yet")
+            print(f"{print_format} lookup bit length too long")
             return [], [], [], False
 
         assert "Resolution" not in field or field["Resolution"] == 1
@@ -148,12 +150,8 @@ def parse_field(field, pgn):
     ######### String FIX
     elif field["FieldType"] == "STRING_FIX":
 
-        if "BitOffset" not in field:
-            print("WARNING: Missing BitOffset")
-            return [], [], [], False
-
-        if "BitLength" not in field:
-            print("WARNING: Missing BitLength")
+        if "BitOffset" not in field or "BitLength" not in field:
+            print(f"{print_format} Missing BitOffset or ButLength")
             return [], [], [], False
 
         assert "BitStart" not in field or int(field["BitStart"]) == 0
@@ -189,7 +187,7 @@ def parse_field(field, pgn):
     ######### Unknown
     elif field["FieldType"] in ["SPARE", "RESERVED"]:
         if "BitOffset" not in field or "BitLength" not in field:
-            print("WARNING: Missing BitOffset or BitLength")
+            print(f"{print_format} Missing BitOffset or BitLength")
             return [], [], [], False
 
         bit_offset = int(field["BitOffset"])
@@ -197,7 +195,7 @@ def parse_field(field, pgn):
         bit_start = int(field.get("BitStart", 0))
 
         if bit_length > 32:
-            print(f"WARNING: spare/reserved too long for pgn {pgn}. Not Implemented yet")
+            print(f"{print_format} spare/reserved too long")
             return [], [], [], False
 
         if bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0:
@@ -212,10 +210,8 @@ def parse_field(field, pgn):
         return [proto], [tree], [field["Id"]], True
 
     else: # Unknown
-        print(f"""Unknown field type {field["FieldType"]}""")
-        print(json.dumps(field, indent=4), pgn)
+        print(f"{print_format} Unsupported field type")
         return [], [], [], False
-
 
 # Download NMEA2000 definition
 if os.path.isfile(json_path):
@@ -229,10 +225,12 @@ else:
 
 # Parse NMEA2000 definition
 created = []
+print(f"""PGN{"":<3} PGN_Id{"":<53} FieldId{"":<24} FieldType{"":<11} Error""")
 for pgn in data["PGNs"]:
 
     if pgn["PGN"] in UNSUPPORTED:
-        print(f"pgn {pgn["PGN"]} set as unsuported, skipping")
+        print(f"{pgn["PGN"]:<6} {"":<112} Unsupported PGN""")
+        # print(json.dumps(field, indent=4), pgn)
         continue
 
     # if 59392 <= pgn["PGN"] and pgn["PGN"] <= 60416: # Ignore ISO 11783 protocol definition
@@ -256,7 +254,7 @@ for pgn in data["PGNs"]:
         if field["Id"].startswith("1st"):
             field["Id"] = "first" + field["Id"][2:]
 
-        proto, tree, name, helper = parse_field(field, pgn["PGN"])
+        proto, tree, name, helper = parse_field(field, pgn)
         proto_fields += proto
         tree_nodes += tree
         fieldnames += name
