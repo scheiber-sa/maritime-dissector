@@ -147,6 +147,74 @@ def parse_field(field, pgn_full):
     subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
         return [proto], [tree], [field["Id"]], True
 
+    ######### Binary
+    elif field["FieldType"] == "BINARY":
+        if "BitOffset" not in field:
+            print(f"{print_format} Missing BitOffset")
+            return [], [], [], False
+
+        bit_offset = int(field["BitOffset"])
+        bit_length = field.get("BitLength")
+        bit_length_variable = field.get("BitLengthVariable", False)
+
+        if bit_length_variable:
+            if "BitLengthField" not in field:
+                print(f"{print_format} Missing BitLengthField for variable BINARY")
+                return [], [], [], False
+
+            referenced_order = int(field["BitLengthField"])
+            length_field = next((f for f in pgn_full["Fields"] if int(f.get("Order", -1)) == referenced_order), None)
+            if not length_field or "BitOffset" not in length_field or "BitLength" not in length_field:
+                print(f"{print_format} Missing referenced field for variable BINARY length")
+                return [], [], [], False
+
+            length_bit_offset = int(length_field["BitOffset"])
+            length_bit_length = int(length_field["BitLength"])
+            byte_offset = bit_offset // 8
+
+            proto = f"""local {field["Id"]} = ProtoField.bytes("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
+
+            tree = f"""local v_bits_{field["Id"]} = read_bits_le(buffer, {length_bit_offset}, {length_bit_length})
+    local start_{field["Id"]} = str_offset + {byte_offset}
+    local byte_len_{field["Id"]} = math.ceil(v_bits_{field["Id"]} / 8)
+    local available_{field["Id"]} = math.max(buffer:len() - start_{field["Id"]}, 0)
+    byte_len_{field["Id"]} = math.min(byte_len_{field["Id"]}, available_{field["Id"]})
+    subtree:add({field["Id"]}, buffer(start_{field["Id"]}, byte_len_{field["Id"]}))
+    str_offset = start_{field["Id"]} + byte_len_{field["Id"]}"""
+            return [proto], [tree], [field["Id"]], True
+
+        if bit_length is None:
+            print(f"{print_format} Missing BitLength for fixed BINARY")
+            return [], [], [], False
+
+        bit_length = int(bit_length)
+        has_following = any(int(f.get("Order", 0)) > int(field.get("Order", 0)) for f in pgn_full.get("Fields", []))
+
+        if bit_length <= 64 and has_following:
+            if bit_length <= 8:
+                proto_type = "ProtoField.uint8"
+            elif bit_length <= 16:
+                proto_type = "ProtoField.uint16"
+            elif bit_length <= 32:
+                proto_type = "ProtoField.uint32"
+            else:
+                proto_type = "ProtoField.uint64"
+
+            proto = f"""local {field["Id"]} = {proto_type}("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}", base.HEX)"""
+            tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
+    subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
+            return [proto], [tree], [field["Id"]], True
+
+        if bit_offset % 8 != 0:
+            print(f"{print_format} BitOffset not divisible by 8")
+            return [], [], [], False
+
+        byte_len = (bit_length + 7) // 8
+        byte_offset = bit_offset // 8
+        proto = f"""local {field["Id"]} = ProtoField.bytes("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
+        tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {byte_offset}, {byte_len}))"""
+        return [proto], [tree], [field["Id"]], False
+
     ######### String FIX
     elif field["FieldType"] == "STRING_FIX":
 
