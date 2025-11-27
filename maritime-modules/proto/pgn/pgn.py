@@ -5,6 +5,7 @@ import os
 import argparse
 
 UNSUPPORTED = [130817, 130818]
+LOOKUP_BIT_ENUMS = {}
 
 # Argument parsing
 parser = argparse.ArgumentParser(
@@ -146,6 +147,73 @@ def parse_field(field, pgn_full):
         tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
     subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
         return [proto], [tree], [field["Id"]], True
+
+    ######### Bit Lookup
+    elif field["FieldType"] == "BITLOOKUP":
+        if "BitOffset" not in field:
+            print(f"{print_format} Missing BitOffset")
+            return [], [], [], False
+
+        if "BitLength" not in field:
+            print(f"{print_format} Missing BitLength")
+            return [], [], [], False
+
+        bit_offset = int(field["BitOffset"])
+        bit_length = int(field["BitLength"])
+
+        if bit_length > 32:
+            print(f"{print_format} BITLOOKUP bit length too long")
+            return [], [], [], False
+
+        assert "Resolution" not in field or field["Resolution"] == 1
+        assert field.get("Signed", False) == False
+
+        if bit_length <= 8:
+            proto_type = "ProtoField.uint8"
+        elif bit_length <= 16:
+            proto_type = "ProtoField.uint16"
+        else:
+            proto_type = "ProtoField.uint32"
+
+        proto = f"""local {field["Id"]} = {proto_type}("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+
+        tree_lines = [
+            f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})""",
+            f"""    local {field["Id"]}_tree = subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
+        ]
+
+        bit_proto_lines = []
+        bit_field_names = []
+        bit_tree_lines = []
+
+        lookup_name = field.get("LookupBitEnumeration")
+        if lookup_name:
+            bit_enum = LOOKUP_BIT_ENUMS.get(lookup_name)
+            if bit_enum:
+                for entry in sorted(bit_enum.get("EnumBitValues", []), key=lambda e: int(e.get("Bit", 0))):
+                    if "Bit" not in entry:
+                        continue
+                    try:
+                        bit_num = int(entry["Bit"])
+                    except (ValueError, TypeError):
+                        continue
+                    bit_label = entry.get("Name", f"Bit {bit_num}")
+                    bit_label = bit_label.replace("\\", "\\\\").replace("\"", "\\\"")
+                    bit_var = f"""{field["Id"]}_bit_{bit_num}"""
+                    bit_proto_lines.append(
+                        f"""local {bit_var} = ProtoField.bool("nmea-2000-{pgn}.{field["Id"]}.bit_{bit_num}", "{bit_label}", base.NONE)"""
+                    )
+                    bit_tree_lines.append(
+                        f"""    {field["Id"]}_tree:add({bit_var}, rng_{field["Id"]}, math.floor(v_{field["Id"]} / 2^{bit_num}) % 2 == 1)"""
+                    )
+                    bit_field_names.append(bit_var)
+            else:
+                print(f"{print_format} LookupBitEnumeration {lookup_name} not found")
+
+        tree_lines.extend(bit_tree_lines)
+        tree = "\n".join(tree_lines)
+
+        return [proto] + bit_proto_lines, [tree], [field["Id"]] + bit_field_names, True
 
     ######### Binary
     elif field["FieldType"] == "BINARY":
@@ -291,6 +359,12 @@ else:
     url = "https://raw.githubusercontent.com/canboat/canboat/refs/heads/master/docs/canboat.json"
     response = requests.get(url)
     data = json.loads(response.content)
+
+LOOKUP_BIT_ENUMS = {
+    entry["Name"]: entry
+    for entry in data.get("LookupBitEnumerations", [])
+    if "Name" in entry
+}
 
 # Parse NMEA2000 definition
 created = []
