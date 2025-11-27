@@ -215,10 +215,11 @@ def parse_field(field, pgn_full):
 
 # Download NMEA2000 definition
 if os.path.isfile(json_path):
+    print(f"Using {json_path} ...")
     with open(json_path, "r") as f:
         data = json.load(f)
 else:
-    print("Downloading NMEA2000 definition ...")
+    print("Downloading upstream canboat NMEA2000 definition ...")
     url = "https://raw.githubusercontent.com/canboat/canboat/refs/heads/master/docs/canboat.json"
     response = requests.get(url)
     data = json.loads(response.content)
