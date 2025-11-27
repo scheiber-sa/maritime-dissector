@@ -6,6 +6,7 @@ import argparse
 
 UNSUPPORTED = [130817, 130818]
 LOOKUP_BIT_ENUMS = {}
+LOOKUP_ENUMS = {}
 
 # Argument parsing
 parser = argparse.ArgumentParser(
@@ -135,18 +136,47 @@ def parse_field(field, pgn_full):
         assert "Resolution" not in field or field["Resolution"] == 1
         assert field.get("Signed", False) == False
 
-        # simple in-byte mask when aligned and <= 8 bits
-        if bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0:
+        simple_mask = bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0
+        if simple_mask:
             bitmask = get_bitmask(bit_length, bit_start)
             proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}", base.DEC, NULL, {bitmask})"""
-            tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {bit_offset // 8}, 1))"""
-            return [proto], [tree], [field["Id"]], False
+        else:
+            proto = f"""local {field["Id"]} = ProtoField.uint32("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
-        # generic masked extract for larger or unaligned lookups
-        proto = f"""local {field["Id"]} = ProtoField.uint32("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
-        tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
-    subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
-        return [proto], [tree], [field["Id"]], True
+        tree_lines = [
+            f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})""",
+            f"""    local {field["Id"]}_tree = subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
+        ]
+
+        lookup_proto_lines = []
+        lookup_name = field.get("LookupEnumeration")
+        if lookup_name:
+            lookup_enumerator = LOOKUP_ENUMS.get(lookup_name)
+            if lookup_enumerator:
+                table_entries = []
+                for entry in sorted(lookup_enumerator.get("EnumValues", []), key=lambda e: int(e.get("Value", 0)) if e.get("Value") is not None else 0):
+                    if "Value" not in entry:
+                        continue
+                    try:
+                        entry_value = int(entry["Value"])
+                    except (ValueError, TypeError):
+                        continue
+                    entry_label = entry.get("Name", f"Value {entry_value}")
+                    entry_label = entry_label.replace("\\", "\\\\").replace("\"", "\\\"")
+                    table_entries.append(f"[{entry_value}] = \"{entry_label}\"")
+                if table_entries:
+                    lookup_table_var = f"""{field["Id"]}_lookup"""
+                    lookup_proto_lines.append(
+                        f"""local {lookup_table_var} = {{{", ".join(table_entries)}}}"""
+                    )
+                    tree_lines.append(f"""    local lookup_label = {lookup_table_var}[v_{field["Id"]}]""")
+                    tree_lines.append(f"""    if lookup_label then {field["Id"]}_tree:append_text(" (" .. lookup_label .. ")") end""")
+            else:
+                print(f"{print_format} LookupEnumeration {lookup_name} not found")
+
+        tree = "\n".join(tree_lines)
+
+        return [proto] + lookup_proto_lines, [tree], [field["Id"]], True
 
     ######### Bit Lookup
     elif field["FieldType"] == "BITLOOKUP":
@@ -363,6 +393,11 @@ else:
 LOOKUP_BIT_ENUMS = {
     entry["Name"]: entry
     for entry in data.get("LookupBitEnumerations", [])
+    if "Name" in entry
+}
+LOOKUP_ENUMS = {
+    entry["Name"]: entry
+    for entry in data.get("LookupEnumerations", [])
     if "Name" in entry
 }
 
