@@ -7,6 +7,7 @@ import argparse
 UNSUPPORTED = [130817, 130818]
 LOOKUP_BIT_ENUMS = {}
 LOOKUP_ENUMS = {}
+LOOKUP_FIELD_TYPE_ENUMS = {}
 
 # Argument parsing
 parser = argparse.ArgumentParser(
@@ -245,6 +246,79 @@ def parse_field(field, pgn_full):
 
         return [proto] + bit_proto_lines, [tree], [field["Id"]] + bit_field_names, True
 
+    ######### FieldType Lookup
+    elif field["FieldType"] == "FIELDTYPE_LOOKUP":
+        if "BitOffset" not in field:
+            print(f"{print_format} Missing BitOffset")
+            return [], [], [], False
+
+        if "BitLength" not in field:
+            print(f"{print_format} Missing BitLength")
+            return [], [], [], False
+
+        bit_offset = int(field["BitOffset"])
+        bit_length = int(field["BitLength"])
+        bit_start = int(field.get("BitStart", 0))
+
+        if bit_length > 32:
+            print(f"{print_format} FIELDTYPE_LOOKUP bit length too long")
+            return [], [], [], False
+
+        assert "Resolution" not in field or field["Resolution"] == 1
+        assert field.get("Signed", False) == False
+
+        simple_mask = bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0
+        if simple_mask:
+            bitmask = get_bitmask(bit_length, bit_start)
+            proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}", base.DEC, NULL, {bitmask})"""
+        else:
+            proto = f"""local {field["Id"]} = ProtoField.uint32("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+
+        tree_lines = [
+            f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})""",
+            f"""    local {field["Id"]}_tree = subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
+        ]
+
+        lookup_proto_lines = []
+        lookup_name = field.get("LookupFieldTypeEnumeration")
+        if lookup_name:
+            lookup_enumerator = LOOKUP_FIELD_TYPE_ENUMS.get(lookup_name)
+            if lookup_enumerator:
+                def enum_value_key(entry):
+                    raw = entry.get("value")
+                    if raw is None:
+                        raw = entry.get("Value")
+                    try:
+                        return int(raw)
+                    except (ValueError, TypeError):
+                        return 0
+
+                table_entries = []
+                for entry in sorted(lookup_enumerator.get("EnumFieldTypeValues", []), key=enum_value_key):
+                    entry_value = entry.get("value", entry.get("Value"))
+                    if entry_value is None:
+                        continue
+                    try:
+                        entry_value = int(entry_value)
+                    except (ValueError, TypeError):
+                        continue
+                    entry_label = entry.get("name") or entry.get("Name") or f"Value {entry_value}"
+                    entry_label = entry_label.replace("\\", "\\\\").replace("\"", "\\\"")
+                    table_entries.append(f"[{entry_value}] = \"{entry_label}\"")
+                if table_entries:
+                    lookup_table_var = f"""{field["Id"]}_lookup"""
+                    lookup_proto_lines.append(
+                        f"""local {lookup_table_var} = {{{", ".join(table_entries)}}}"""
+                    )
+                    tree_lines.append(f"""    local lookup_label = {lookup_table_var}[v_{field["Id"]}]""")
+                    tree_lines.append(f"""    if lookup_label then {field["Id"]}_tree:append_text(" (" .. lookup_label .. ")") end""")
+            else:
+                print(f"{print_format} LookupFieldTypeEnumeration {lookup_name} not found")
+
+        tree = "\n".join(tree_lines)
+
+        return [proto] + lookup_proto_lines, [tree], [field["Id"]], True
+
     ######### Binary
     elif field["FieldType"] == "BINARY":
         if "BitOffset" not in field:
@@ -398,6 +472,11 @@ LOOKUP_BIT_ENUMS = {
 LOOKUP_ENUMS = {
     entry["Name"]: entry
     for entry in data.get("LookupEnumerations", [])
+    if "Name" in entry
+}
+LOOKUP_FIELD_TYPE_ENUMS = {
+    entry["Name"]: entry
+    for entry in data.get("LookupFieldTypeEnumerations", [])
     if "Name" in entry
 }
 
