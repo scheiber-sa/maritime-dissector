@@ -358,7 +358,7 @@ def parse_field(field, pgn_full):
         return [proto], [tree], [field["Id"]], False
 
     ######### String LAU
-    elif field["FieldType"] == "STRING_LAU":
+    elif field["FieldType"] in ["STRING_LAU", "STRING_LZ"]:
         # Variable encoding 1. byte length 2. byte type (0 UNICODE, 1 ASCII)
         # TODO Problem: other fields after a STRING_LAU may change their position depending on the length of the string
 
@@ -369,11 +369,20 @@ def parse_field(field, pgn_full):
         assert int(field["BitOffset"]) % 8 == 0
 
         proto = f"""local {field["Id"]} = ProtoField.string("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+        byte_offset = int(field["BitOffset"]) // 8
 
-        tree = f"""length = buffer(str_offset + {int(field["BitOffset"]) // 8}, 1):uint() - 2
-    -- type = buffer(str_offset + {int(field["BitOffset"]) // 8} + 1, 1):uint() --0 Unicode, 1 ASCII (ignored)
-    subtree:add({field["Id"]}, buffer(str_offset + {int(field["BitOffset"]) // 8} + 2, length))
+        if field["FieldType"] == "STRING_LAU":
+             tree = f"""length = buffer(str_offset + {byte_offset}, 1):uint() - 2
+    subtree:add({field["Id"]}, buffer(str_offset + {byte_offset} + 2, length))
     str_offset = str_offset + length + 2"""
+
+        elif field["FieldType"] == "STRING_LZ":
+            tree = f"""local length_{field["Id"]} = buffer(str_offset + {byte_offset}, 1):uint()
+    local payload_start_{field["Id"]} = str_offset + {byte_offset} + 1
+    local available_{field["Id"]} = math.max(buffer:len() - payload_start_{field["Id"]}, 0)
+    local string_len_{field["Id"]} = math.min(length_{field["Id"]}, math.max(available_{field["Id"]} - 1, 0))
+    subtree:add({field["Id"]}, buffer(payload_start_{field["Id"]}, string_len_{field["Id"]}))
+    str_offset = str_offset + length_{field["Id"]} + 2"""
 
         return [proto], [tree], [field["Id"]], False
 
