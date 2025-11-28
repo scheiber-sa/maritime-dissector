@@ -70,7 +70,6 @@ def parse_field(field, pgn_full):
         if "BitStart" in field and int(field["BitStart"]) % 8 != 0:
             print(f"{print_format} BitStart not divisible by 8")
             return [], [], [], False
-            assert int(field["BitStart"]) % 8 == 0
 
         if bit_length % 8 != 0:
             print(f"{print_format} BitLength not divisible by 8")
@@ -123,7 +122,7 @@ def parse_field(field, pgn_full):
         bit_length = int(field["BitLength"])
 
         if bit_length > 32:
-            print(f"{print_format} BITLOOKUP bit length too long")
+            print(f"{print_format} bit length too long")
             return [], [], [], False
 
         assert "Resolution" not in field or field["Resolution"] == 1
@@ -194,7 +193,7 @@ def parse_field(field, pgn_full):
         bit_start = int(field.get("BitStart", 0))
 
         if bit_length > 32:
-            print(f"{print_format} lookup bit length too long")
+            print(f"{print_format} bit length too long")
             return [], [], [], False
 
         assert "Resolution" not in field or field["Resolution"] == 1
@@ -284,7 +283,7 @@ def parse_field(field, pgn_full):
 
         if bit_length_variable:
             if "BitLengthField" not in field:
-                print(f"{print_format} Missing BitLengthField for variable BINARY")
+                print(f"{print_format} Missing BitLengthField")
                 return [], [], [], False
 
             referenced_order = int(field["BitLengthField"])
@@ -309,7 +308,7 @@ def parse_field(field, pgn_full):
             return [proto], [tree], [field["Id"]], True
 
         if bit_length is None:
-            print(f"{print_format} Missing BitLength for fixed BINARY")
+            print(f"{print_format} Missing BitLength")
             return [], [], [], False
 
         bit_length = int(bit_length)
@@ -342,9 +341,8 @@ def parse_field(field, pgn_full):
 
     ######### String FIX
     elif field["FieldType"] == "STRING_FIX":
-
         if "BitOffset" not in field or "BitLength" not in field:
-            print(f"{print_format} Missing BitOffset or ButLength")
+            print(f"{print_format} Missing BitOffset or BitLength")
             return [], [], [], False
 
         assert "BitStart" not in field or int(field["BitStart"]) == 0
