@@ -355,6 +355,38 @@ def parse_field(field, pgn_full):
 
         return [proto], [tree], [field["Id"]], False
 
+    ######### Decimal BCD
+    elif field["FieldType"] == "DECIMAL":
+        if "BitOffset" not in field or "BitLength" not in field:
+            print(f"{print_format} Missing BitOffset or BitLength")
+            return [], [], [], False
+
+        bit_offset = int(field["BitOffset"])
+        bit_length = int(field["BitLength"])
+
+        if bit_length % 8 != 0:
+            print(f"{print_format} BitLength not divisible by 8")
+            return [], [], [], False
+
+        byte_offset = bit_offset // 8
+        byte_len = bit_length // 8
+
+        proto = f"""local {field["Id"]} = ProtoField.string("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
+
+        tree = f"""local raw_{field["Id"]} = buffer(str_offset + {byte_offset}, {byte_len})
+    local digits_{field["Id"]} = {{}}
+    for i=0,{byte_len - 1} do
+        local byte_{field["Id"]} = raw_{field["Id"]}(i,1):uint()
+        local hi_{field["Id"]} = math.floor(byte_{field["Id"]} / 16)
+        local lo_{field["Id"]} = byte_{field["Id"]} % 16
+        digits_{field["Id"]}[#digits_{field["Id"]} + 1] = tostring(hi_{field["Id"]})
+        digits_{field["Id"]}[#digits_{field["Id"]} + 1] = tostring(lo_{field["Id"]})
+    end
+    local decimal_{field["Id"]} = table.concat(digits_{field["Id"]})
+    subtree:add({field["Id"]}, raw_{field["Id"]}):append_text(" (" .. decimal_{field["Id"]} .. ")")"""
+
+        return [proto], [tree], [field["Id"]], False
+
     ######### String LAU
     elif field["FieldType"] in ["STRING_LAU", "STRING_LZ"]:
         # Variable encoding 1. byte length 2. byte type (0 UNICODE, 1 ASCII)
