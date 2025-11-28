@@ -202,8 +202,7 @@ def parse_field(field, pgn_full):
 
         simple_mask = bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0
         if simple_mask:
-            bitmask = get_bitmask(bit_length, bit_start)
-            proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}", base.DEC, NULL, {bitmask})"""
+            proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
         else:
             proto = f"""local {field["Id"]} = ProtoField.uint32("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
@@ -393,8 +392,7 @@ def parse_field(field, pgn_full):
             return [], [], [], False
 
         if bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0:
-            bitmask = get_bitmask(bit_length, bit_start)
-            proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}", base.DEC, NULL, {bitmask})"""
+            proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
             tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {bit_offset // 8}, 1))"""
             return [proto], [tree], [field["Id"]], False
 
