@@ -446,10 +446,22 @@ def parse_field(field, pgn_full):
         byte_offset = int(field["BitOffset"]) // 8
 
         if field["FieldType"] == "STRING_LAU":
-             tree = f"""local raw_length = buffer(str_offset + {byte_offset}, 1):uint()
-    local length = math.max(raw_length - 2, 0)
-    subtree:add({field["Id"]}, buffer(str_offset + {byte_offset} + 2, length))
-    str_offset = str_offset + length + 2"""
+             tree = f"""local start_length = str_offset + {byte_offset}
+    local length = 0
+    if buffer:len() > start_length then
+        length = math.max(buffer(start_length, 1):uint() - 2, 0)
+    end
+    local start = start_length + 2
+    local available = math.max(buffer:len() - start, 0)
+    local actual_len = math.min(length, available)
+    local payload_buf
+    if start < buffer:len() then
+        payload_buf = buffer(start, actual_len)
+    else
+        payload_buf = buffer(buffer:len(), 0)
+    end
+    subtree:add({field["Id"]}, payload_buf)
+    str_offset = start_length + 2 + actual_len"""
 
         elif field["FieldType"] == "STRING_LZ":
             tree = f"""local length_{field["Id"]} = buffer(str_offset + {byte_offset}, 1):uint()
