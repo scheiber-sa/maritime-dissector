@@ -200,10 +200,8 @@ def parse_field(field, pgn_full):
         assert field.get("Signed", False) == False
 
         simple_mask = bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0
-        if simple_mask:
-            proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
-        else:
-            proto = f"""local {field["Id"]} = ProtoField.uint32("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+        proto_type = "ProtoField.uint8" if simple_mask else "ProtoField.uint32"
+        proto = f"""local {field["Id"]} = {proto_type}("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
         tree_lines = [
             f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})""",
@@ -235,6 +233,10 @@ def parse_field(field, pgn_full):
         lookup_name = None
         lookup_table = LOOKUP_ENUMS
         field_type = field["FieldType"]
+        reference_field = None
+        reference_bit_offset = None
+        reference_bit_length = None
+        reference_var = None
         if field_type == "FIELDTYPE_LOOKUP":
             lookup_name = field.get("LookupFieldTypeEnumeration")
             search_table = LOOKUP_FIELD_TYPE_ENUMS
@@ -243,6 +245,19 @@ def parse_field(field, pgn_full):
             lookup_name = field.get("LookupIndirectEnumeration")
             search_table = LOOKUP_INDIRECT_ENUMS
             enum_key = "EnumValues"
+            reference_order = field.get("LookupIndirectEnumerationFieldOrder")
+            if reference_order is not None:
+                try:
+                    reference_order = int(reference_order)
+                except (TypeError, ValueError):
+                    reference_order = None
+            if reference_order is not None:
+                ref_candidate = next((f for f in pgn_full["Fields"] if int(f.get("Order", -1)) == reference_order), None)
+                if ref_candidate and "BitOffset" in ref_candidate and "BitLength" in ref_candidate:
+                    reference_field = ref_candidate
+                    reference_bit_offset = int(ref_candidate["BitOffset"])
+                    reference_bit_length = int(ref_candidate["BitLength"])
+                    reference_var = ref_candidate["Id"]
         else:
             lookup_name = field.get("LookupEnumeration")
             search_table = LOOKUP_ENUMS
@@ -251,14 +266,43 @@ def parse_field(field, pgn_full):
         if lookup_name:
             lookup_enumerator = search_table.get(lookup_name)
             if lookup_enumerator:
-                lookup_entries = build_lookup_entries(lookup_enumerator, enum_key)
-                lookup_entries.sort(key=lambda x: x[0])
+                if field_type == "INDIRECT_LOOKUP":
+                    lookup_entries = []
+                    for entry in lookup_enumerator.get("EnumValues", []):
+                        value1 = entry.get("Value1")
+                        value2 = entry.get("Value2")
+                        if value1 is None or value2 is None:
+                            continue
+                        try:
+                            value1 = int(value1)
+                            value2 = int(value2)
+                        except (TypeError, ValueError):
+                            continue
+                        label = entry.get("Name", f"Value {value1}/{value2}")
+                        label = label.replace("\\", "\\\\").replace("\"", "\\\"")
+                        lookup_entries.append((value1, value2, label))
+                else:
+                    lookup_entries = build_lookup_entries(lookup_enumerator, enum_key)
+                    lookup_entries.sort(key=lambda x: x[0])
                 if lookup_entries:
                     lookup_table = f"""{field["Id"]}_lookup"""
-                    lookup_proto_lines.append(
-                        f"""local {lookup_table} = {{{", ".join(f"[{val}] = \"{lbl}\"" for val, lbl in lookup_entries)}}}"""
-                    )
-                    tree_lines.append(f"""    local lookup_label = {lookup_table}[v_{field["Id"]}]""")
+                    if field_type == "INDIRECT_LOOKUP":
+                        lookup_proto_lines.append(
+                            f"""local {lookup_table} = {{{", ".join(f"[\"{v1},{v2}\"] = \"{lbl}\"" for v1, v2, lbl in lookup_entries)}}}"""
+                        )
+                    else:
+                        lookup_proto_lines.append(
+                            f"""local {lookup_table} = {{{", ".join(f"[{val}] = \"{lbl}\"" for val, lbl in lookup_entries)}}}"""
+                        )
+                    if field_type == "INDIRECT_LOOKUP":
+                        if reference_field:
+                            tree_lines.append(f"""    local v_{reference_var}, rng_{reference_var} = read_bits_le(buffer, {reference_bit_offset}, {reference_bit_length})""")
+                            tree_lines.append(f"""    local lookup_key = tostring(v_{reference_var}) .. "," .. tostring(v_{field["Id"]})""")
+                        else:
+                            tree_lines.append(f"""    local lookup_key = tostring(v_{field["Id"]})""")
+                        tree_lines.append(f"""    local lookup_label = {lookup_table}[lookup_key]""")
+                    else:
+                        tree_lines.append(f"""    local lookup_label = {lookup_table}[v_{field["Id"]}]""")
                     tree_lines.append(f"""    if lookup_label then {field["Id"]}_tree:append_text(" (" .. lookup_label .. ")") end""")
             else:
                 descriptor_name = {
