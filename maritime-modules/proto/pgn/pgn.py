@@ -59,7 +59,7 @@ def parse_field(field, pgn_full):
             scale = field.get("Resolution", 1)
             signed = field.get("Signed", False)
 
-            proto = f"""local {field["Id"]} = ProtoField.float("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+            proto = f"""local {field["Id"]} = ProtoField.double("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
             tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
     {"if v_"+field["Id"]+" >= 2^(" + str(bit_length-1) + ") then v_"+field["Id"]+" = v_"+field["Id"]+" - 2^" + str(bit_length) + " end" if signed else ""}
@@ -80,7 +80,7 @@ def parse_field(field, pgn_full):
 
         if "Resolution" in field:
             scale = field["Resolution"]
-            proto = f"""local {field["Id"]} = ProtoField.float("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+            proto = f"""local {field["Id"]} = ProtoField.double("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
             if "Signed" not in field: # NOTE default unsigned for DATE/TIME/DURATION/PGN/ISO_NAME/MMSI
                 field["Signed"] = False
