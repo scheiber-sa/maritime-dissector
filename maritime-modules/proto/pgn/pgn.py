@@ -38,12 +38,25 @@ def get_bitmask(length, offset): # Note Litle endian
 def parse_field(field, pgn_full):
     pgn = pgn_full["PGN"]
     print_format = f"""{pgn:<6} {pgn_full["Id"]:<59} {field["Id"]:<31} {field["FieldType"]:<20}"""
+    extra_protos = []
+    extra_trees = []
+    extra_names = []
+
     if "FieldType" not in field:
         if not field["Id"].endswith("RepeatAsNeeded") and not field["Id"].endswith("RepeatedAsNeeded"):
             print(f"{print_format} Missing Fieldtype")
         else:
             pass # TODO Handle those types
         return [], [], [], False
+
+    # PGN specific
+    if pgn_full["PGN"] == 60928:
+        if field["Id"] == "uniqueNumber":
+            extra_protos.append(
+                'local uniqueNumber_hex = ProtoField.uint32("nmea-2000-60928.uniqueNumber_hex", "Unique Number (HEX)", base.HEX)'
+            )
+            extra_trees.append(f"""subtree:add(uniqueNumber_hex, rng_{field["Id"]}, v_{field["Id"]})""")
+            extra_names.append("uniqueNumber_hex")
 
     ######### Integer
     if field["FieldType"] in ["NUMBER", "DATE", "TIME", "DURATION", "PGN", "ISO_NAME", "MMSI"]: # uint8 uint16 uint32 int8 ...
@@ -65,7 +78,7 @@ def parse_field(field, pgn_full):
     {"if v_"+field["Id"]+" >= 2^(" + str(bit_length-1) + ") then v_"+field["Id"]+" = v_"+field["Id"]+" - 2^" + str(bit_length) + " end" if signed else ""}
     subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]} * {scale})"""
 
-            return [proto], [tree], [field["Id"]], True
+            return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, True
 
         if "BitStart" in field and int(field["BitStart"]) % 8 != 0:
             print(f"{print_format} BitStart not divisible by 8")
@@ -93,7 +106,7 @@ def parse_field(field, pgn_full):
         else:
             assert False
 
-        return [proto], [tree], [field["Id"]], False
+        return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, False
 
     ######### Float
     elif field["FieldType"] == "FLOAT": # float32 resolution 1, signed 1
@@ -106,7 +119,7 @@ def parse_field(field, pgn_full):
 
         tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {int(field["BitOffset"]) // 8}, {int(field["BitLength"]) // 8}))"""
 
-        return [proto], [tree], [field["Id"]], False
+        return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, False
 
     ######### Bit Lookup
     elif field["FieldType"] == "BITLOOKUP":
@@ -173,7 +186,7 @@ def parse_field(field, pgn_full):
         tree_lines.extend(bit_tree_lines)
         tree = "\n".join(tree_lines)
 
-        return [proto] + bit_proto_lines, [tree], [field["Id"]] + bit_field_names, True
+        return [proto] + bit_proto_lines + extra_protos, [tree] + extra_trees, [field["Id"]] + bit_field_names + extra_names, True
 
     ######### Other Lookup
     elif field["FieldType"] in ["LOOKUP", "INDIRECT_LOOKUP", "FIELDTYPE_LOOKUP"]:
@@ -313,7 +326,7 @@ def parse_field(field, pgn_full):
 
         tree = "\n".join(tree_lines)
 
-        return [proto] + lookup_proto_lines, [tree], [field["Id"]], True
+        return [proto] + lookup_proto_lines + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, True
 
     ######### Binary
     elif field["FieldType"] == "BINARY":
@@ -371,7 +384,7 @@ def parse_field(field, pgn_full):
             proto = f"""local {field["Id"]} = {proto_type}("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}", base.HEX)"""
             tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
     subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
-            return [proto], [tree], [field["Id"]], True
+            return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, True
 
         if bit_offset % 8 != 0:
             print(f"{print_format} BitOffset not divisible by 8")
@@ -381,7 +394,8 @@ def parse_field(field, pgn_full):
         byte_offset = bit_offset // 8
         proto = f"""local {field["Id"]} = ProtoField.bytes("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
         tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {byte_offset}, {byte_len}))"""
-        return [proto], [tree], [field["Id"]], False
+
+        return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, False
 
     ######### String FIX
     elif field["FieldType"] == "STRING_FIX":
@@ -397,7 +411,7 @@ def parse_field(field, pgn_full):
 
         tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {int(field["BitOffset"]) // 8}, {int(field["BitLength"]) // 8}))"""
 
-        return [proto], [tree], [field["Id"]], False
+        return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, False
 
     ######### Decimal BCD
     elif field["FieldType"] == "DECIMAL":
@@ -429,7 +443,7 @@ def parse_field(field, pgn_full):
     local decimal_{field["Id"]} = table.concat(digits_{field["Id"]})
     subtree:add({field["Id"]}, raw_{field["Id"]}):append_text(" (" .. decimal_{field["Id"]} .. ")")"""
 
-        return [proto], [tree], [field["Id"]], False
+        return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, False
 
     ######### String LAU
     elif field["FieldType"] in ["STRING_LAU", "STRING_LZ"]:
@@ -471,7 +485,7 @@ def parse_field(field, pgn_full):
     subtree:add({field["Id"]}, buffer(payload_start_{field["Id"]}, string_len_{field["Id"]}))
     str_offset = str_offset + length_{field["Id"]} + 2"""
 
-        return [proto], [tree], [field["Id"]], False
+        return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, False
 
     ######### Unknown
     elif field["FieldType"] in ["SPARE", "RESERVED"]:
@@ -495,7 +509,8 @@ def parse_field(field, pgn_full):
         proto = f"""local {field["Id"]} = ProtoField.uint32("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
         tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
     subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
-        return [proto], [tree], [field["Id"]], True
+
+        return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, True
 
     else: # Unknown
         print(f"{print_format} Unsupported field type")
@@ -543,16 +558,6 @@ for pgn in data["PGNs"]:
         # print(json.dumps(field, indent=4), pgn)
         continue
 
-    # if 59392 <= pgn["PGN"] and pgn["PGN"] <= 60416: # Ignore ISO 11783 protocol definition
-    #     print(f"pgn {pgn["PGN"]} ignored")
-    #     continue
-    # if pgn["PGN"] == 61184: # Ignore Manufacturer proprietary
-    #     print(f"pgn {pgn["PGN"]} ignored (Manufacturer proprietary)")
-    #     continue
-    # if 65280 <= pgn["PGN"] and pgn["PGN"] <= 65535: # Ignore Manufacturer proprietary
-    #     print(f"pgn {pgn["PGN"]} ignored (Manufacturer proprietary")
-    #     continue
-
     created.append(pgn["PGN"])
     fieldnames = []
     proto_fields = []
@@ -569,7 +574,15 @@ for pgn in data["PGNs"]:
         tree_nodes += tree
         fieldnames += name
         need_bit_helper = need_bit_helper or helper
-     
+
+    if pgn["PGN"] == 60928:
+        iso_name_proto = 'local isoName = ProtoField.uint64("nmea-2000-60928.isoName", "isoName", base.HEX)'
+        iso_name_tree = """local isoName_range = buffer(str_offset, 8)
+    subtree:add(isoName, isoName_range, isoName_range:le_uint64())"""
+        proto_fields.insert(0, iso_name_proto)
+        tree_nodes.insert(0, iso_name_tree)
+        fieldnames.insert(0, "isoName")
+
     # Write pgn_***.lua files
     with open(os.path.join(script_dir, f"pgn_{pgn['PGN']}.lua"), "w") as f:
 
