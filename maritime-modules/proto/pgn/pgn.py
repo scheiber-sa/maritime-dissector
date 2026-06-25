@@ -3,6 +3,8 @@ import requests
 import json
 import os
 import argparse
+import re
+from collections import defaultdict
 
 UNSUPPORTED = [130817, 130818]
 
@@ -35,8 +37,37 @@ def get_bitmask(length, offset): # Note Litle endian
         offset -= 1
     return hex(mask)
 
+def lua_escape(value):
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+def lua_identifier(value):
+    value = re.sub(r'[^0-9A-Za-z_]', '_', str(value))
+    if not value or value[0].isdigit():
+        value = "_" + value
+    return value
+
+def file_suffix(value):
+    value = re.sub(r'[^0-9A-Za-z_]+', '_', str(value)).strip('_')
+    return value or "variant"
+
+def get_match_fields(pgn_full):
+    matches = []
+    for field in pgn_full.get("Fields", []):
+        if "Match" not in field:
+            continue
+        if "BitOffset" not in field or "BitLength" not in field:
+            continue
+        matches.append({
+            "id": field["Id"],
+            "bit_offset": int(field["BitOffset"]),
+            "bit_length": int(field["BitLength"]),
+            "match": int(field["Match"]),
+        })
+    return matches
+
 def parse_field(field, pgn_full):
     pgn = pgn_full["PGN"]
+    proto_prefix = pgn_full.get("_ProtoPrefix", f"nmea-2000-{pgn}")
     print_format = f"""{pgn:<6} {pgn_full["Id"]:<59} {field["Id"]:<31} {field["FieldType"]:<20}"""
     extra_protos = []
     extra_trees = []
@@ -53,7 +84,7 @@ def parse_field(field, pgn_full):
     if pgn_full["PGN"] == 60928:
         if field["Id"] == "uniqueNumber":
             extra_protos.append(
-                'local uniqueNumber_hex = ProtoField.uint32("nmea-2000-60928.uniqueNumber_hex", "Unique Number (HEX)", base.HEX)'
+                f'local uniqueNumber_hex = ProtoField.uint32("{proto_prefix}.uniqueNumber_hex", "Unique Number (HEX)", base.HEX)'
             )
             extra_trees.append(f"""subtree:add(uniqueNumber_hex, rng_{field["Id"]}, v_{field["Id"]})""")
             extra_names.append("uniqueNumber_hex")
@@ -72,7 +103,7 @@ def parse_field(field, pgn_full):
             scale = field.get("Resolution", 1)
             signed = field.get("Signed", False)
 
-            proto = f"""local {field["Id"]} = ProtoField.double("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+            proto = f"""local {field["Id"]} = ProtoField.double("{proto_prefix}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
             tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
     {"if v_"+field["Id"]+" >= 2^(" + str(bit_length-1) + ") then v_"+field["Id"]+" = v_"+field["Id"]+" - 2^" + str(bit_length) + " end" if signed else ""}
@@ -93,7 +124,7 @@ def parse_field(field, pgn_full):
 
         if "Resolution" in field:
             scale = field["Resolution"]
-            proto = f"""local {field["Id"]} = ProtoField.double("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+            proto = f"""local {field["Id"]} = ProtoField.double("{proto_prefix}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
             if "Signed" not in field: # NOTE default unsigned for DATE/TIME/DURATION/PGN/ISO_NAME/MMSI
                 field["Signed"] = False
@@ -115,7 +146,7 @@ def parse_field(field, pgn_full):
         assert int(field["BitLength"]) == 32
         assert field["Signed"] == True
 
-        proto = f"""local {field["Id"]} = ProtoField.float("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+        proto = f"""local {field["Id"]} = ProtoField.float("{proto_prefix}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
         tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {int(field["BitOffset"]) // 8}, {int(field["BitLength"]) // 8}))"""
 
@@ -148,7 +179,7 @@ def parse_field(field, pgn_full):
         else:
             proto_type = "ProtoField.uint32"
 
-        proto = f"""local {field["Id"]} = {proto_type}("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+        proto = f"""local {field["Id"]} = {proto_type}("{proto_prefix}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
         tree_lines = [
             f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})""",
@@ -174,7 +205,7 @@ def parse_field(field, pgn_full):
                     bit_label = bit_label.replace("\\", "\\\\").replace("\"", "\\\"")
                     bit_var = f"""{field["Id"]}_bit_{bit_num}"""
                     bit_proto_lines.append(
-                        f"""local {bit_var} = ProtoField.bool("nmea-2000-{pgn}.{field["Id"]}.bit_{bit_num}", "{bit_label}", base.NONE)"""
+                        f"""local {bit_var} = ProtoField.bool("{proto_prefix}.{field["Id"]}.bit_{bit_num}", "{bit_label}", base.NONE)"""
                     )
                     bit_tree_lines.append(
                         f"""    {field["Id"]}_tree:add({bit_var}, rng_{field["Id"]}, math.floor(v_{field["Id"]} / 2^{bit_num}) % 2 == 1)"""
@@ -214,7 +245,7 @@ def parse_field(field, pgn_full):
 
         simple_mask = bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0
         proto_type = "ProtoField.uint8" if simple_mask else "ProtoField.uint32"
-        proto = f"""local {field["Id"]} = {proto_type}("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+        proto = f"""local {field["Id"]} = {proto_type}("{proto_prefix}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
         tree_lines = [
             f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})""",
@@ -353,7 +384,7 @@ def parse_field(field, pgn_full):
             length_bit_length = int(length_field["BitLength"])
             byte_offset = bit_offset // 8
 
-            proto = f"""local {field["Id"]} = ProtoField.bytes("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
+            proto = f"""local {field["Id"]} = ProtoField.bytes("{proto_prefix}.{field["Id"]}", "{field["Name"]}")"""
 
             tree = f"""local v_bits_{field["Id"]} = read_bits_le(buffer, {length_bit_offset}, {length_bit_length})
     local start_{field["Id"]} = str_offset + {byte_offset}
@@ -381,7 +412,7 @@ def parse_field(field, pgn_full):
             else:
                 proto_type = "ProtoField.uint64"
 
-            proto = f"""local {field["Id"]} = {proto_type}("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}", base.HEX)"""
+            proto = f"""local {field["Id"]} = {proto_type}("{proto_prefix}.{field["Id"]}", "{field["Name"]}", base.HEX)"""
             tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
     subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
             return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, True
@@ -392,7 +423,7 @@ def parse_field(field, pgn_full):
 
         byte_len = (bit_length + 7) // 8
         byte_offset = bit_offset // 8
-        proto = f"""local {field["Id"]} = ProtoField.bytes("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
+        proto = f"""local {field["Id"]} = ProtoField.bytes("{proto_prefix}.{field["Id"]}", "{field["Name"]}")"""
         tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {byte_offset}, {byte_len}))"""
 
         return [proto] + extra_protos, [tree] + extra_trees, [field["Id"]] + extra_names, False
@@ -407,7 +438,7 @@ def parse_field(field, pgn_full):
         assert int(field["BitOffset"]) % 8 == 0
         assert int(field["BitLength"]) % 8 == 0
 
-        proto = f"""local {field["Id"]} = ProtoField.string("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+        proto = f"""local {field["Id"]} = ProtoField.string("{proto_prefix}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
 
         tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {int(field["BitOffset"]) // 8}, {int(field["BitLength"]) // 8}))"""
 
@@ -429,7 +460,7 @@ def parse_field(field, pgn_full):
         byte_offset = bit_offset // 8
         byte_len = bit_length // 8
 
-        proto = f"""local {field["Id"]} = ProtoField.string("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
+        proto = f"""local {field["Id"]} = ProtoField.string("{proto_prefix}.{field["Id"]}", "{field["Name"]}")"""
 
         tree = f"""local raw_{field["Id"]} = buffer(str_offset + {byte_offset}, {byte_len})
     local digits_{field["Id"]} = {{}}
@@ -456,7 +487,7 @@ def parse_field(field, pgn_full):
         assert "BitStart" not in field or int(field["BitStart"]) == 0
         assert int(field["BitOffset"]) % 8 == 0
 
-        proto = f"""local {field["Id"]} = ProtoField.string("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
+        proto = f"""local {field["Id"]} = ProtoField.string("{proto_prefix}.{field["Id"]}", "{field["Name"]}{" ("+field["Unit"]+")" if "Unit" in field else ""}")"""
         byte_offset = int(field["BitOffset"]) // 8
 
         if field["FieldType"] == "STRING_LAU":
@@ -502,11 +533,11 @@ def parse_field(field, pgn_full):
             return [], [], [], False
 
         if bit_length <= 8 and bit_offset % 8 == 0 and (bit_offset - bit_start) % 8 == 0:
-            proto = f"""local {field["Id"]} = ProtoField.uint8("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
+            proto = f"""local {field["Id"]} = ProtoField.uint8("{proto_prefix}.{field["Id"]}", "{field["Name"]}")"""
             tree = f"""subtree:add({field["Id"]}, buffer(str_offset + {bit_offset // 8}, 1))"""
             return [proto], [tree], [field["Id"]], False
 
-        proto = f"""local {field["Id"]} = ProtoField.uint32("nmea-2000-{pgn}.{field["Id"]}", "{field["Name"]}")"""
+        proto = f"""local {field["Id"]} = ProtoField.uint32("{proto_prefix}.{field["Id"]}", "{field["Name"]}")"""
         tree = f"""local v_{field["Id"]}, rng_{field["Id"]} = read_bits_le(buffer, {bit_offset}, {bit_length})
     subtree:add({field["Id"]}, rng_{field["Id"]}, v_{field["Id"]})"""
 
@@ -548,56 +579,8 @@ LOOKUP_FIELD_TYPE_ENUMS = {
     if "Name" in entry
 }
 
-# Parse NMEA2000 definition
-created = []
-print(f"""PGN{"":<3} PGN_Id{"":<53} FieldId{"":<24} FieldType{"":<11} Error""")
-for pgn in data["PGNs"]:
-
-    if pgn["PGN"] in UNSUPPORTED:
-        print(f"{pgn["PGN"]:<6} {"":<112} Unsupported PGN""")
-        # print(json.dumps(field, indent=4), pgn)
-        continue
-
-    created.append(pgn["PGN"])
-    fieldnames = []
-    proto_fields = []
-    tree_nodes = []
-    need_bit_helper = False
-
-    for field in pgn["Fields"]:
-        # Sanitize field["Id"] as they cannot contain numbers
-        if field["Id"].startswith("1st"):
-            field["Id"] = "first" + field["Id"][2:]
-
-        proto, tree, name, helper = parse_field(field, pgn)
-        proto_fields += proto
-        tree_nodes += tree
-        fieldnames += name
-        need_bit_helper = need_bit_helper or helper
-
-    if pgn["PGN"] == 60928:
-        iso_name_proto = 'local isoName = ProtoField.uint64("nmea-2000-60928.isoName", "isoName", base.HEX)'
-        iso_name_tree = """local isoName_range = buffer(str_offset, 8)
-    subtree:add(isoName, isoName_range, isoName_range:le_uint64())"""
-        proto_fields.insert(0, iso_name_proto)
-        tree_nodes.insert(0, iso_name_tree)
-        fieldnames.insert(0, "isoName")
-
-    # Write pgn_***.lua files
-    with open(os.path.join(script_dir, f"pgn_{pgn['PGN']}.lua"), "w") as f:
-
-        f.write(f"""-- prevent wireshark loading this file as plugin
-if not _G['maritimedissector'] then return end
-
--- WARNING: This file is generated automatically by ./pgn.py --
-
-NMEA_2000_{pgn["PGN"]} = Proto("nmea-2000-{pgn["PGN"]}", "{pgn["Description"]} ({pgn["PGN"]})")\n""")
-
-        for field in proto_fields:
-            f.write(f"""{field}\n""")
-
-        if need_bit_helper:
-            f.write("""
+def write_bit_helper(f):
+    f.write("""
 local function read_bits_le(buf, bit_offset, bit_length)
     local byte_offset = math.floor(bit_offset / 8)
     local bit_in_byte = bit_offset % 8
@@ -613,11 +596,78 @@ local function read_bits_le(buf, bit_offset, bit_length)
 end
 """)
 
-        f.write(f"""\nNMEA_2000_{pgn["PGN"]}.fields = {{{",".join(fieldnames)}}}
+def generate_pgn_file(pgn, module_suffix=None):
+    pgn_id = pgn["PGN"]
+    lua_name = pgn.get("_LuaName", f"NMEA_2000_{pgn_id}")
+    proto_name = pgn.get("_ProtoName", f"nmea-2000-{pgn_id}")
+    module_file = f"pgn_{pgn_id}{'_' + module_suffix if module_suffix else ''}.lua"
 
-function NMEA_2000_{pgn["PGN"]}.dissector(buffer, pinfo, tree)
-    local subtree_title = "PGN {pgn["PGN"]} ({pgn["Description"]})"
-    local subtree = tree:add(NMEA_2000_{pgn["PGN"]}, buffer(), subtree_title)
+    fieldnames = []
+    proto_fields = []
+    tree_nodes = []
+    need_bit_helper = False
+
+    for field in pgn["Fields"]:
+        field["Id"] = lua_identifier(field["Id"])
+
+        proto, tree, name, helper = parse_field(field, pgn)
+        proto_fields += proto
+        tree_nodes += tree
+        fieldnames += name
+        need_bit_helper = need_bit_helper or helper
+
+    if pgn_id == 60928:
+        proto_prefix = pgn.get("_ProtoPrefix", f"nmea-2000-{pgn_id}")
+        iso_name_proto = f'local isoName = ProtoField.uint64("{proto_prefix}.isoName", "isoName", base.HEX)'
+        iso_name_tree = """local isoName_range = buffer(str_offset, 8)
+    subtree:add(isoName, isoName_range, isoName_range:le_uint64())"""
+        proto_fields.insert(0, iso_name_proto)
+        tree_nodes.insert(0, iso_name_tree)
+        fieldnames.insert(0, "isoName")
+
+    # Write pgn_***.lua files
+    with open(os.path.join(script_dir, module_file), "w") as f:
+
+        f.write(f"""-- prevent wireshark loading this file as plugin
+if not _G['maritimedissector'] then return end
+
+-- WARNING: This file is generated automatically by ./pgn.py --
+
+local proto = Proto("{proto_name}", "{lua_escape(pgn["Description"])} ({pgn_id})")
+local pgn_dissector = {{}}
+""")
+
+        for field in proto_fields:
+            f.write(f"""{field}\n""")
+
+        match_fields = get_match_fields(pgn)
+        if need_bit_helper or match_fields:
+            write_bit_helper(f)
+
+        f.write(f"""\nproto.fields = {{{",".join(fieldnames)}}}
+
+function pgn_dissector.matches(buffer)
+""")
+        if match_fields:
+            for match in match_fields:
+                byte_offset = match["bit_offset"] // 8
+                byte_len = (match["bit_offset"] % 8 + match["bit_length"] + 7) // 8
+                f.write(f"""    if buffer:len() < {byte_offset + byte_len} then return false end
+    local v_{match["id"]} = read_bits_le(buffer, {match["bit_offset"]}, {match["bit_length"]})
+    if v_{match["id"]} ~= {match["match"]} then return false end
+""")
+            f.write("""    return true
+end
+""")
+        else:
+            f.write("""    return true
+end
+""")
+
+        f.write(f"""
+function pgn_dissector.dissector(buffer, pinfo, tree)
+    local subtree_title = "PGN {pgn_id} ({lua_escape(pgn["Description"])})"
+    local subtree = tree:add(proto, buffer(), subtree_title)
     local str_offset = 0\n\n""")
 
         for node in tree_nodes:
@@ -625,8 +675,83 @@ function NMEA_2000_{pgn["PGN"]}.dissector(buffer, pinfo, tree)
 
         f.write(f"""end
 
-return NMEA_2000_{pgn["PGN"]}
+return pgn_dissector
 """)
+    return module_file[:-4], lua_name, match_fields
+
+def generate_duplicate_dispatcher(pgn_id, variants):
+    lua_name = f"NMEA_2000_{pgn_id}"
+    with open(os.path.join(script_dir, f"pgn_{pgn_id}.lua"), "w") as f:
+        f.write(f"""-- prevent wireshark loading this file as plugin
+if not _G['maritimedissector'] then return end
+
+-- WARNING: This file is generated automatically by ./pgn.py --
+
+local variants = {{
+""")
+        fallback = None
+        for variant in variants:
+            module_name, _, match_fields = variant
+            if not match_fields and fallback is None:
+                fallback = module_name
+                continue
+            f.write(f"""    require "maritime-modules.proto.pgn.{module_name}",
+""")
+        if fallback:
+            f.write(f"""    require "maritime-modules.proto.pgn.{fallback}",
+""")
+        f.write(f"""}}
+
+{lua_name} = {{}}
+
+function {lua_name}.dissector(buffer, pinfo, tree)
+    for _, variant in ipairs(variants) do
+        if variant.matches(buffer) then
+            variant.dissector(buffer, pinfo, tree)
+            return true
+        end
+    end
+
+    return false
+end
+
+return {lua_name}
+""")
+
+# Parse NMEA2000 definition
+created = []
+pgn_groups = defaultdict(list)
+print(f"""PGN{"":<3} PGN_Id{"":<53} FieldId{"":<24} FieldType{"":<11} Error""")
+for pgn in data["PGNs"]:
+    pgn_groups[pgn["PGN"]].append(pgn)
+
+for pgn_id, pgns in pgn_groups.items():
+    if pgn_id in UNSUPPORTED:
+        print(f"{pgn_id:<6} {"":<112} Unsupported PGN""")
+        continue
+
+    created.append(pgn_id)
+    if len(pgns) == 1:
+        pgns[0]["_LuaName"] = f"NMEA_2000_{pgn_id}"
+        pgns[0]["_ProtoName"] = f"nmea-2000-{pgn_id}"
+        pgns[0]["_ProtoPrefix"] = f"nmea-2000-{pgn_id}"
+        generate_pgn_file(pgns[0])
+        continue
+
+    variants = []
+    used_suffixes = set()
+    for index, pgn in enumerate(pgns, start=1):
+        suffix = file_suffix(pgn.get("Id", f"variant_{index}"))
+        if suffix in used_suffixes:
+            suffix = f"{suffix}_{index}"
+        used_suffixes.add(suffix)
+        lua_suffix = lua_identifier(suffix)
+        pgn["_LuaName"] = f"NMEA_2000_{pgn_id}_{lua_suffix}"
+        pgn["_ProtoName"] = f"nmea-2000-{pgn_id}-{suffix}"
+        pgn["_ProtoPrefix"] = f"nmea-2000-{pgn_id}-{suffix}"
+        variants.append(generate_pgn_file(pgn, suffix))
+
+    generate_duplicate_dispatcher(pgn_id, variants)
 
 with open(os.path.join(script_dir, "pgn.lua"), "w") as f:
     f.write(f"""-- prevent wireshark loading this file as plugin
@@ -653,7 +778,7 @@ local pgn_dissector = {{}}
 
     for idx, c in enumerate(unique_created):
         f.write(f"""    {"if" if idx == 0 else "elseif"} pgn == {c} then
-        NMEA_2000_{c}.dissector(buffer, pinfo, tree)\n""")
+        if NMEA_2000_{c}.dissector(buffer, pinfo, tree) == false then return false end\n""")
 
     f.write(f"""    else
         return false
