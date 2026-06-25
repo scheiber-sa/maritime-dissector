@@ -635,6 +635,7 @@ if not _G['maritimedissector'] then return end
 
 local proto = Proto("{proto_name}", "{lua_escape(pgn["Description"])} ({pgn_id})")
 local pgn_dissector = {{}}
+pgn_dissector.description = "{lua_escape(pgn["Description"])}"
 """)
 
         for field in proto_fields:
@@ -673,7 +674,8 @@ function pgn_dissector.dissector(buffer, pinfo, tree)
         for node in tree_nodes:
             f.write(f"""    {node}\n""")
 
-        f.write(f"""end
+        f.write(f"""    return true, pgn_dissector.description
+end
 
 return pgn_dissector
 """)
@@ -707,8 +709,8 @@ local variants = {{
 function {lua_name}.dissector(buffer, pinfo, tree)
     for _, variant in ipairs(variants) do
         if variant.matches(buffer) then
-            variant.dissector(buffer, pinfo, tree)
-            return true
+            local ok, description = variant.dissector(buffer, pinfo, tree)
+            return ok, description
         end
     end
 
@@ -778,7 +780,9 @@ local pgn_dissector = {{}}
 
     for idx, c in enumerate(unique_created):
         f.write(f"""    {"if" if idx == 0 else "elseif"} pgn == {c} then
-        if NMEA_2000_{c}.dissector(buffer, pinfo, tree) == false then return false end\n""")
+        local ok, description = NMEA_2000_{c}.dissector(buffer, pinfo, tree)
+        if ok == false then return false end
+        return true, description\n""")
 
     f.write(f"""    else
         return false

@@ -3,6 +3,7 @@ import requests
 import os
 import json
 import argparse
+from collections import defaultdict
 
 ONLINE = False
 
@@ -43,12 +44,17 @@ if not _G['maritimedissector'] then return end
 -- List of known PGN for NMEA 2000 (Source: https://github.com/canboat/canboat/blob/master/sources/NMEA_database_1_300.xml)
 local known_pgns = {{\n""")
 
-    # Parse XML
+    pgn_descriptions = defaultdict(list)
     for pgn in data["PGNs"]:
         if pgn["PGN"] in UNSUPPORTED:
             continue
 
-        f.write(f"\t[{int(pgn["PGN"])}]=\"{pgn["Description"]}\",\n")
+        if pgn["Description"] not in pgn_descriptions[pgn["PGN"]]:
+            pgn_descriptions[pgn["PGN"]].append(pgn["Description"])
+
+    for pgn, descriptions in pgn_descriptions.items():
+        description = descriptions[0] if len(descriptions) == 1 else "Multiple definitions"
+        f.write(f"\t[{int(pgn)}]=\"{description}\",\n")
 
     f.write(f"""}}
 
