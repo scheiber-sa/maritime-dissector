@@ -96,19 +96,34 @@ function NMEA_2000.dissector(buffer, pinfo, tree)
     local pgn_id = parser_nmea:extract_pgn(can_id_f())
     local pgn_trans = idtranslator:get_pgn_translation(pgn_id)
     local dissected_pgn_trans = nil
+    local pgn_name_value = pgn_trans
+    local fast = is_fast(pgn_id)
+    local seq_
+    local counter_
+    local key
 
-    local subtree = tree:add(NMEA_2000, buffer(), pgn_subtree_title(pgn_id, pgn_trans))
+    if fast then
+        seq_ = bit32.rshift(buffer(0, 1):uint(), 5)
+        counter_ = bit32.band(buffer(0, 1):uint(), 0x1f)
+        key = string.format("%d-%d-%d-%d", pgn_id, parser_nmea:extract_src(can_id_f()), parser_nmea:extract_dst(can_id_f()), seq_)
+        if defragmented[key] ~= nil and get_closest(key, pinfo.abs_ts) ~= nil then
+            pgn_name_value = pgn_dissector.describe(ByteArray.tvb(defragmented[key][get_closest(key, pinfo.abs_ts)], "Reassembled Data"), pgn_id) or pgn_trans
+        end
+    else
+        pgn_name_value = pgn_dissector.describe(buffer, pgn_id) or pgn_trans
+    end
+
+    local subtree = tree:add(NMEA_2000, buffer(), pgn_subtree_title(pgn_id, pgn_name_value))
 
     subtree:add(pgn, pgn_id)
+    subtree:add(pgn_name, pgn_name_value)
     subtree:add(src, parser_nmea:extract_src(can_id_f()))
     subtree:add(dst, parser_nmea:extract_dst(can_id_f()))
     subtree:add(prio, parser_nmea:extract_prio(can_id_f()))
 
-    if is_fast(pgn_id) then -- handle fragmented messages
+    if fast then -- handle fragmented messages
         subtree:add(seq, buffer(0, 1))
-        seq_ = bit32.rshift(buffer(0, 1):uint(), 5)
         subtree:add(counter, buffer(0, 1))
-        counter_ = bit32.band(buffer(0, 1):uint(), 0x1f)
 
         if counter_ == 0 then -- only in first packet has length--
             subtree:add(len, buffer(1, 1))
@@ -117,7 +132,6 @@ function NMEA_2000.dissector(buffer, pinfo, tree)
             subtree:add(frag_data, buffer(1, 7))
         end
 
-        key = string.format("%d-%d-%d-%d", pgn_id, parser_nmea:extract_src(can_id_f()), parser_nmea:extract_dst(can_id_f()), seq_)
         if defragmented[key] ~= nil and get_closest(key, pinfo.abs_ts) ~= nil then -- Lookup fragmented packet
             local ok
             ok, dissected_pgn_trans = pgn_dissector.dissector(ByteArray.tvb(defragmented[key][get_closest(key, pinfo.abs_ts)], "Reassembled Data"), pinfo, subtree, pgn_id)
@@ -174,7 +188,6 @@ function NMEA_2000.dissector(buffer, pinfo, tree)
         end
     end
 
-    subtree:add(pgn_name, dissected_pgn_trans or pgn_trans)
     pinfo.cols.protocol = NMEA_2000.name
 end
 

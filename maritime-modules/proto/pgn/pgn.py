@@ -666,6 +666,14 @@ end
 """)
 
         f.write(f"""
+function pgn_dissector.describe(buffer)
+    if pgn_dissector.matches(buffer) then
+        return pgn_dissector.description
+    end
+
+    return nil
+end
+
 function pgn_dissector.dissector(buffer, pinfo, tree)
     local subtree_title = "PGN {pgn_id} ({lua_escape(pgn["Description"])})"
     local subtree = tree:add(proto, buffer(), subtree_title)
@@ -705,6 +713,17 @@ local variants = {{
         f.write(f"""}}
 
 {lua_name} = {{}}
+
+function {lua_name}.describe(buffer)
+    for _, variant in ipairs(variants) do
+        local description = variant.describe(buffer)
+        if description ~= nil then
+            return description
+        end
+    end
+
+    return nil
+end
 
 function {lua_name}.dissector(buffer, pinfo, tree)
     for _, variant in ipairs(variants) do
@@ -776,7 +795,18 @@ local pgn_dissector = {{}}
     for c in unique_created:
         f.write(f"NMEA_2000_{c} = require \"maritime-modules.proto.pgn.pgn_{c}\"\n")
 
-    f.write(f"""\nfunction pgn_dissector.dissector(buffer, pinfo, tree, pgn)\n""")
+    f.write(f"""\nfunction pgn_dissector.describe(buffer, pgn)\n""")
+
+    for idx, c in enumerate(unique_created):
+        f.write(f"""    {"if" if idx == 0 else "elseif"} pgn == {c} then
+        return NMEA_2000_{c}.describe(buffer)\n""")
+
+    f.write(f"""    else
+        return nil
+    end
+end
+
+function pgn_dissector.dissector(buffer, pinfo, tree, pgn)\n""")
 
     for idx, c in enumerate(unique_created):
         f.write(f"""    {"if" if idx == 0 else "elseif"} pgn == {c} then
