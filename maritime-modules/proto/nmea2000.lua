@@ -14,6 +14,7 @@ local fragmented_pgns = require "maritime-modules.knownids.pgn-fragmented" -- Lo
 NMEA_2000 = Proto("nmea-2000", "NMEA 2000")
 
 local pgn = ProtoField.uint32("nmea-2000.pgn", "Parameter Group Number")
+local pgn_name = ProtoField.string("nmea-2000.pgn_name", "PGN Name")
 local src = ProtoField.uint32("nmea-2000.src", "Source")
 local dst = ProtoField.uint32("nmea-2000.dst", "Destination")
 local prio = ProtoField.uint32("nmea-2000.prio", "Priority")
@@ -24,7 +25,7 @@ local seq = ProtoField.uint8("nmea-2000.seq", "Sequence Number", base.DEC, NULL,
 local counter = ProtoField.uint8("nmea-2000.counter", "Frame Counter", base.DEC, NULL, 0x1f)
 local len = ProtoField.uint8("nmea-2000.len", "Length (Bytes)")
 
-NMEA_2000.fields = {pgn, src, dst, prio, data, frag_data, seq, counter, len}
+NMEA_2000.fields = {pgn, pgn_name, src, dst, prio, data, frag_data, seq, counter, len}
 NMEA_2000.experts = {}
 
 -- Buffer for long frames
@@ -94,6 +95,7 @@ end
 function NMEA_2000.dissector(buffer, pinfo, tree)
     local pgn_id = parser_nmea:extract_pgn(can_id_f())
     local pgn_trans = idtranslator:get_pgn_translation(pgn_id)
+    local dissected_pgn_trans = nil
 
     local subtree = tree:add(NMEA_2000, buffer(), pgn_subtree_title(pgn_id, pgn_trans))
 
@@ -117,7 +119,8 @@ function NMEA_2000.dissector(buffer, pinfo, tree)
 
         key = string.format("%d-%d-%d-%d", pgn_id, parser_nmea:extract_src(can_id_f()), parser_nmea:extract_dst(can_id_f()), seq_)
         if defragmented[key] ~= nil and get_closest(key, pinfo.abs_ts) ~= nil then -- Lookup fragmented packet
-            local ok, dissected_pgn_trans = pgn_dissector.dissector(ByteArray.tvb(defragmented[key][get_closest(key, pinfo.abs_ts)], "Reassembled Data"), pinfo, subtree, pgn_id)
+            local ok
+            ok, dissected_pgn_trans = pgn_dissector.dissector(ByteArray.tvb(defragmented[key][get_closest(key, pinfo.abs_ts)], "Reassembled Data"), pinfo, subtree, pgn_id)
             if ok ~= false then
                 update_pgn_subtree_title(subtree, pgn_id, dissected_pgn_trans)
             end
@@ -145,7 +148,8 @@ function NMEA_2000.dissector(buffer, pinfo, tree)
                 end
 
                 defragmented[key][frag_buffer[key]["time"]] = ByteArray.new(get_fragment_data(frag_buffer[key]), true)
-                local ok, dissected_pgn_trans = pgn_dissector.dissector(ByteArray.tvb(defragmented[key][frag_buffer[key]["time"]], "Reassembled Data"), pinfo, subtree, pgn_id)
+                local ok
+                ok, dissected_pgn_trans = pgn_dissector.dissector(ByteArray.tvb(defragmented[key][frag_buffer[key]["time"]], "Reassembled Data"), pinfo, subtree, pgn_id)
                 if ok ~= false then
                     update_pgn_subtree_title(subtree, pgn_id, dissected_pgn_trans)
                 end
@@ -157,7 +161,8 @@ function NMEA_2000.dissector(buffer, pinfo, tree)
     else
 
         -- Parse single-frame pgn types --
-        local ok, dissected_pgn_trans = pgn_dissector.dissector(buffer, pinfo, subtree, pgn_id)
+        local ok
+        ok, dissected_pgn_trans = pgn_dissector.dissector(buffer, pinfo, subtree, pgn_id)
         if ok == false then
             if pgn_id == 59904 then
                 subtree:add(data, buffer(0, 3))
@@ -169,6 +174,7 @@ function NMEA_2000.dissector(buffer, pinfo, tree)
         end
     end
 
+    subtree:add(pgn_name, dissected_pgn_trans or pgn_trans)
     pinfo.cols.protocol = NMEA_2000.name
 end
 
