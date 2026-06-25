@@ -30,6 +30,7 @@ NMEA_2000.experts = {}
 
 -- Buffer for long frames
 local frag_buffer = {}
+local frag_pgn_names = {}
 local defragmented = {}
 
 function is_fast(pgn)
@@ -108,6 +109,12 @@ function NMEA_2000.dissector(buffer, pinfo, tree)
         key = string.format("%d-%d-%d-%d", pgn_id, parser_nmea:extract_src(can_id_f()), parser_nmea:extract_dst(can_id_f()), seq_)
         if defragmented[key] ~= nil and get_closest(key, pinfo.abs_ts) ~= nil then
             pgn_name_value = pgn_dissector.describe(ByteArray.tvb(defragmented[key][get_closest(key, pinfo.abs_ts)], "Reassembled Data"), pgn_id) or pgn_trans
+        elseif counter_ == 0 and buffer:len() > 2 then
+            local partial_len = math.min(buffer:len() - 2, 6)
+            pgn_name_value = pgn_dissector.describe(buffer(2, partial_len):tvb("Partial Fast Packet Data"), pgn_id) or pgn_trans
+            frag_pgn_names[key] = pgn_name_value
+        elseif frag_pgn_names[key] ~= nil then
+            pgn_name_value = frag_pgn_names[key]
         end
     else
         pgn_name_value = pgn_dissector.describe(buffer, pgn_id) or pgn_trans
@@ -166,6 +173,7 @@ function NMEA_2000.dissector(buffer, pinfo, tree)
                 ok, dissected_pgn_trans = pgn_dissector.dissector(ByteArray.tvb(defragmented[key][frag_buffer[key]["time"]], "Reassembled Data"), pinfo, subtree, pgn_id)
                 if ok ~= false then
                     update_pgn_subtree_title(subtree, pgn_id, dissected_pgn_trans)
+                    frag_pgn_names[key] = dissected_pgn_trans
                 end
                 frag_buffer[key] = nil
             end

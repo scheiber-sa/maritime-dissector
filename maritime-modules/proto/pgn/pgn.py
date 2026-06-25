@@ -61,9 +61,22 @@ def get_match_fields(pgn_full):
             "id": field["Id"],
             "bit_offset": int(field["BitOffset"]),
             "bit_length": int(field["BitLength"]),
-            "match": int(field["Match"]),
+            "matches": [int(field["Match"])],
         })
     return matches
+
+def get_lookup_entries(lookup_name):
+    entries = []
+    lookup = LOOKUP_ENUMS.get(lookup_name)
+    if not lookup:
+        return entries
+    for entry in lookup.get("EnumValues", []):
+        value = entry.get("Value")
+        name = entry.get("Name")
+        if value is None or name is None:
+            continue
+        entries.append((int(value), lua_escape(name)))
+    return entries
 
 def parse_field(field, pgn_full):
     pgn = pgn_full["PGN"]
@@ -653,9 +666,10 @@ function pgn_dissector.matches(buffer)
             for match in match_fields:
                 byte_offset = match["bit_offset"] // 8
                 byte_len = (match["bit_offset"] % 8 + match["bit_length"] + 7) // 8
+                match_condition = " and ".join(f"""v_{match["id"]} ~= {value}""" for value in match["matches"])
                 f.write(f"""    if buffer:len() < {byte_offset + byte_len} then return false end
     local v_{match["id"]} = read_bits_le(buffer, {match["bit_offset"]}, {match["bit_length"]})
-    if v_{match["id"]} ~= {match["match"]} then return false end
+    if {match_condition} then return false end
 """)
             f.write("""    return true
 end
@@ -691,6 +705,11 @@ return pgn_dissector
 
 def generate_duplicate_dispatcher(pgn_id, variants):
     lua_name = f"NMEA_2000_{pgn_id}"
+    has_manufacturer_selector = any(
+        any(match["id"] == "manufacturerCode" for match in match_fields)
+        for _, _, match_fields in variants
+    )
+    manufacturer_entries = get_lookup_entries("MANUFACTURER_CODE") if has_manufacturer_selector else []
     with open(os.path.join(script_dir, f"pgn_{pgn_id}.lua"), "w") as f:
         f.write(f"""-- prevent wireshark loading this file as plugin
 if not _G['maritimedissector'] then return end
@@ -707,11 +726,51 @@ local variants = {{
                 continue
             f.write(f"""    require "maritime-modules.proto.pgn.{module_name}",
 """)
-        if fallback:
-            f.write(f"""    require "maritime-modules.proto.pgn.{fallback}",
+        f.write("""}
 """)
-        f.write(f"""}}
+        if fallback:
+            f.write(f"""local fallback = require "maritime-modules.proto.pgn.{fallback}"
+""")
+        else:
+            f.write("""local fallback = nil
+""")
+        if manufacturer_entries:
+            f.write(f"""
+local manufacturer_lookup = {{{", ".join(f"[{value}] = \"{name}\"" for value, name in manufacturer_entries)}}}
 
+local function read_bits_le(buf, bit_offset, bit_length)
+    local byte_offset = math.floor(bit_offset / 8)
+    local bit_in_byte = bit_offset % 8
+    local needed_bits = bit_in_byte + bit_length
+    local byte_len = math.ceil(needed_bits / 8)
+    local raw
+    if byte_len <= 4 then
+        raw = buf(byte_offset, byte_len):le_uint()
+    else
+        raw = buf(byte_offset, byte_len):le_uint64():tonumber()
+    end
+    return math.floor(raw / 2^bit_in_byte) % 2^bit_length, buf(byte_offset, byte_len)
+end
+
+local function describe_unknown_manufacturer(buffer)
+    if buffer:len() < 2 then return nil end
+    local manufacturer_code = read_bits_le(buffer, 0, 11)
+    local manufacturer = manufacturer_lookup[manufacturer_code]
+    if manufacturer ~= nil then
+        return manufacturer .. ": Unknown"
+    end
+
+    return "Manufacturer " .. manufacturer_code .. ": Unknown"
+end
+""")
+        else:
+            f.write("""
+local function describe_unknown_manufacturer(buffer)
+    return nil
+end
+""")
+
+        f.write(f"""
 {lua_name} = {{}}
 
 function {lua_name}.describe(buffer)
@@ -720,6 +779,15 @@ function {lua_name}.describe(buffer)
         if description ~= nil then
             return description
         end
+    end
+
+    local unknown_manufacturer_description = describe_unknown_manufacturer(buffer)
+    if unknown_manufacturer_description ~= nil then
+        return unknown_manufacturer_description
+    end
+
+    if fallback ~= nil then
+        return fallback.describe(buffer)
     end
 
     return nil
@@ -731,6 +799,15 @@ function {lua_name}.dissector(buffer, pinfo, tree)
             local ok, description = variant.dissector(buffer, pinfo, tree)
             return ok, description
         end
+    end
+
+    if describe_unknown_manufacturer(buffer) ~= nil then
+        return false
+    end
+
+    if fallback ~= nil and fallback.matches(buffer) then
+        local ok, description = fallback.dissector(buffer, pinfo, tree)
+        return ok, description
     end
 
     return false
