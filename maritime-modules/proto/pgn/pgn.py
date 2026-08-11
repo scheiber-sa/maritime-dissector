@@ -3,8 +3,14 @@ import requests
 import json
 import os
 import argparse
+import re
 
 UNSUPPORTED = [130817, 130818]
+LUA_KEYWORDS = {
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
+    "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return",
+    "then", "true", "until", "while"
+}
 
 # Argument parsing
 parser = argparse.ArgumentParser(
@@ -34,6 +40,16 @@ def get_bitmask(length, offset): # Note Litle endian
         mask = mask << 1
         offset -= 1
     return hex(mask)
+
+def sanitize_lua_identifier(identifier):
+    if identifier.startswith("1st"):
+        identifier = "first" + identifier[3:]
+    identifier = re.sub(r"[^0-9A-Za-z_]", "_", identifier)
+    if not identifier:
+        identifier = "field"
+    if identifier[0].isdigit() or identifier in LUA_KEYWORDS:
+        identifier = f"field_{identifier}"
+    return identifier
 
 def parse_field(field, pgn_full):
     pgn = pgn_full["PGN"]
@@ -564,11 +580,18 @@ for pgn in data["PGNs"]:
     tree_nodes = []
     need_bit_helper = False
 
+    used_field_ids = set()
     for field in pgn["Fields"]:
-        # Sanitize field["Id"] as they cannot contain numbers
-        if field["Id"].startswith("1st"):
-            field["Id"] = "first" + field["Id"][2:]
+        base_id = sanitize_lua_identifier(field["Id"])
+        field_id = base_id
+        suffix = 2
+        while field_id in used_field_ids:
+            field_id = f"{base_id}_{suffix}"
+            suffix += 1
+        field["Id"] = field_id
+        used_field_ids.add(field_id)
 
+    for field in pgn["Fields"]:
         proto, tree, name, helper = parse_field(field, pgn)
         proto_fields += proto
         tree_nodes += tree
